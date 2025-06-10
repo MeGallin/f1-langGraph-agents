@@ -1,0 +1,60 @@
+{
+  "name": "f1-langgraph-agents",
+  "version": "1.0.0",
+  "description": "F1 Racing Intelligence Agents powered by LangGraph and MCP",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/**/*.test.js",
+    "test:watch": "node --test --watch test/**/*.test.js",
+    "lint": "eslint src/ test/",
+    "lint:fix": "eslint src/ test/ --fix",
+    "docker:build": "docker build -t f1-langgraph-agents .",
+    "docker:run": "docker run -p 3000:3000 f1-langgraph-agents",
+    "deploy:check": "node scripts/deploy-check.js"
+  },
+  "keywords": [
+    "f1",
+    "formula-one",
+    "langgraph",
+    "mcp",
+    "ai-agents",
+    "racing-intelligence"
+  ],
+  "author": "F1 MCP LangGraph Team",
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/core": "^0.3.16",
+    "@langchain/langgraph": "^0.2.19",
+    "@langchain/openai": "^0.3.14",
+    "@langchain/anthropic": "^0.3.7",
+    "@langchain/community": "^0.3.15",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "winston": "^3.11.0",
+    "dotenv": "^16.3.1",
+    "zod": "^3.22.4",
+    "axios": "^1.6.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "eslint-config-standard": "^17.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-promise": "^6.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/f1-mcp-langgraph/f1-langgraph-agents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/f1-mcp-langgraph/f1-langgraph-agents/issues"
+  },
+  "homepage": "https://github.com/f1-mcp-langgraph/f1-langgraph-agents#readme"
+}
