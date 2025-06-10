@@ -29,7 +29,7 @@ This service provides specialized AI agents for comprehensive Formula 1 racing a
 
 - Node.js 18+
 - Access to F1 MCP Server (https://f1-mcp-server-5dh3.onrender.com)
-- OpenAI API key or Anthropic API key
+- OpenAI API key
 - Environment variables configured
 
 ## 🛠️ Installation
@@ -76,7 +76,6 @@ F1_API_PROXY_URL=https://f1-api-proxy.onrender.com
 
 # AI Model Configuration
 OPENAI_API_KEY=your_openai_api_key_here
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 # LangGraph Configuration
 LANGGRAPH_API_KEY=your_langgraph_api_key_here

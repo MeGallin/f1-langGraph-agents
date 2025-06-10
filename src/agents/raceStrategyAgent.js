@@ -15,7 +15,6 @@
 
 import { StateGraph, START, END } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
-import { ChatAnthropic } from '@langchain/anthropic';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { RaceState } from '../state/schemas.js';
 import logger from '../utils/logger.js';
