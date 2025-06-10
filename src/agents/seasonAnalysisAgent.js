@@ -60,7 +60,29 @@ export class SeasonAnalysisAgent {
    * Build the LangGraph workflow for season analysis
    */
   buildWorkflow() {
-    const workflow = new StateGraph(SeasonState);
+    // Use channel-based configuration instead of class
+    const workflow = new StateGraph({
+      channels: {
+        messages: { default: () => [] },
+        currentQuery: { default: () => '' },
+        selectedSeason: { default: () => null },
+        selectedDriver: { default: () => null },
+        selectedRace: { default: () => null },
+        selectedConstructor: { default: () => null },
+        analysisType: { default: () => 'season' },
+        results: { default: () => [] },
+        insights: { default: () => [] },
+        confidence: { default: () => 0 },
+        timestamp: { default: () => new Date().toISOString() },
+        seasons: { default: () => [] },
+        constructorData: { default: () => [] },
+        raceResults: { default: () => [] },
+        championshipStandings: { default: () => [] },
+        trends: { default: () => [] },
+        finalResponse: { default: () => '' },
+        completedAt: { default: () => null },
+      },
+    });
 
     // Add nodes
     workflow.addNode('analyzeQuery', this.analyzeQueryNode.bind(this));
