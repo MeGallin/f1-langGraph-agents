@@ -6,6 +6,8 @@ import logger, { requestLogger } from './utils/logger.js';
 
 // Import agents
 import SeasonAnalysisAgent from './agents/seasonAnalysisAgent.js';
+import MultiAgentOrchestrator from './agents/multiAgentOrchestrator.js';
+import LangGraphAdapter from './adapters/langGraphAdapter.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,7 +47,11 @@ app.use((req, res, next) => {
 // Initialize agents
 const agents = {
   seasonAnalysis: null,
+  multiAgent: null,
 };
+
+// Initialize LangGraph adapter
+const langGraphAdapter = new LangGraphAdapter();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -56,6 +62,7 @@ app.get('/health', (req, res) => {
     version: process.env.npm_package_version || '1.0.0',
     agents: {
       seasonAnalysis: agents.seasonAnalysis?.initialized || false,
+      multiAgent: agents.multiAgent !== null,
     },
     environment: process.env.NODE_ENV || 'development',
   };
@@ -80,6 +87,43 @@ app.get('/agents', (req, res) => {
   });
 
   res.json(agentInfo);
+});
+
+// Multi-Agent Orchestrator endpoint
+app.post('/agents/analyze', async (req, res) => {
+  try {
+    const { query, options = {} } = req.body;
+
+    if (!query) {
+      return res.status(400).json({
+        error: 'Query is required',
+        message: 'Please provide a query string in the request body',
+      });
+    }
+
+    // Initialize multi-agent orchestrator if not already done
+    if (!agents.multiAgent) {
+      logger.info('Initializing Multi-Agent Orchestrator');
+      agents.multiAgent = new MultiAgentOrchestrator(langGraphAdapter);
+    }
+
+    // Process the query through the orchestrator
+    const result = await agents.multiAgent.processQuery(query, options);
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Multi-agent analysis failed', {
+      error: error.message,
+      query: req.body.query,
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Analysis failed',
+      message: error.message,
+      query: req.body.query,
+    });
+  }
 });
 
 // Season analysis endpoint
