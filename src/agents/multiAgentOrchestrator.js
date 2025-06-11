@@ -608,6 +608,76 @@ Provide a clear, engaging response that demonstrates deep F1 expertise.
       ).length,
     };
   }
+
+  // Get information about all available agents
+  getAvailableAgents() {
+    const agentInfo = {};
+
+    for (const [agentType, agent] of Object.entries(this.agents)) {
+      agentInfo[agentType] = {
+        name: agentType,
+        description: this.getAgentDescription(agentType),
+        capabilities: this.getAgentCapabilities(agentType),
+        initialized: !!agent,
+      };
+    }
+
+    return agentInfo;
+  }
+
+  getAgentDescription(agentType) {
+    const descriptions = {
+      season:
+        'Season Analysis Agent - Analyzes F1 season data, championship standings, and constructor performance',
+      driver:
+        'Driver Performance Agent - Examines individual driver performance, career statistics, and driver comparisons',
+      race: 'Race Strategy Agent - Provides insights on race strategy, circuit analysis, and race-specific information',
+      championship:
+        'Championship Predictor Agent - Makes predictions about championship outcomes with probability calculations',
+      historical:
+        'Historical Comparison Agent - Offers cross-era comparisons and historical data analysis',
+    };
+
+    return descriptions[agentType] || `${agentType} Agent`;
+  }
+
+  getAgentCapabilities(agentType) {
+    const capabilities = {
+      season: [
+        'Season statistics',
+        'Team performance',
+        'Championship standings',
+        'Constructor analysis',
+      ],
+      driver: [
+        'Driver statistics',
+        'Career analysis',
+        'Performance comparisons',
+        'Driver form',
+      ],
+      race: [
+        'Race strategy',
+        'Circuit analysis',
+        'Tire management',
+        'Weather impact',
+        'Lap time analysis',
+      ],
+      championship: [
+        'Title predictions',
+        'Points projections',
+        'Scenario modeling',
+        'Probability calculations',
+      ],
+      historical: [
+        'Era comparisons',
+        'Historical statistics',
+        'Legacy assessment',
+        'Evolution tracking',
+      ],
+    };
+
+    return capabilities[agentType] || [];
+  }
 }
 
 export default MultiAgentOrchestrator;
