@@ -213,7 +213,7 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
     message: `Route ${req.method} ${req.url} not found`,
-    available: ['GET /health', 'GET /agents', 'POST /agents/season/analyze'],
+    available: ['GET /health', 'GET /agents', 'POST /agents/analyze', 'POST /agents/season/analyze'],
   });
 });
 
