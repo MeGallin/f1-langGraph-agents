@@ -8,6 +8,7 @@ import {
 import { F1LangGraphAdapter } from '../adapters/langGraphAdapter.js';
 import { SeasonState, StateUtils } from '../state/schemas.js';
 import logger from '../utils/logger.js';
+import { promptLoader } from '../prompts/prompt-loader.js';
 
 /**
  * F1 Season Analysis Agent
@@ -128,32 +129,12 @@ export class SeasonAnalysisAgent {
       logger.debug('Analyzing season query', { query: currentQuery });
 
       // Use LLM to extract season information from query
-      const analysisPrompt = `
-        Analyze this F1 query and extract key information:
-        Query: "${currentQuery}"
-        
-        Determine:
-        1. Which season(s) are being asked about?
-        2. What type of analysis is requested? (overview, comparison, trends, specific aspects)
-        3. Any specific constructors, drivers, or races mentioned?
-        
-        Respond in JSON format:
-        {
-          "seasons": [list of years],
-          "analysisType": "single_season|multi_season|comparison",
-          "specificAspects": ["aspect1", "aspect2"],
-          "entities": {
-            "drivers": ["driver names"],
-            "constructors": ["constructor names"],
-            "races": ["race names"]
-          }
-        }
-      `;
+      const analysisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'queryAnalysis', {
+        query: currentQuery
+      });
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are an F1 query analysis expert. Extract structured information from F1 queries.',
-        ),
+        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'queryAnalyzer')),
         new HumanMessage(analysisPrompt),
       ]);
 
@@ -272,24 +253,14 @@ export class SeasonAnalysisAgent {
       );
 
       // Analyze constructor performance using LLM
-      const analysisPrompt = `
-        Analyze the F1 constructor performance for ${selectedSeason}:
-        
-        Constructor Standings: ${JSON.stringify(standings, null, 2)}
-        
-        Provide insights on:
-        1. Championship battle and competitiveness
-        2. Performance trends throughout the season
-        3. Notable achievements or disappointments
-        4. Technical or strategic advantages
-        
-        Format as structured analysis with key insights.
-      `;
+      const analysisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'constructorAnalysis', {
+        season: selectedSeason,
+        constructorData: constructorData,
+        standings: standings
+      });
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are an F1 technical analyst with deep knowledge of constructor performance and F1 history.',
-        ),
+        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'technicalAnalyst')),
         new HumanMessage(analysisPrompt),
       ]);
 
@@ -327,26 +298,15 @@ export class SeasonAnalysisAgent {
       logger.debug('Analyzing multi-season trends', { seasons });
 
       // Analyze trends using LLM
-      const trendsPrompt = `
-        Analyze F1 trends across seasons ${seasons.join(', ')}:
-        
-        Constructor Data: ${JSON.stringify(constructorData, null, 2)}
-        Race Data: ${JSON.stringify(raceResults, null, 2)}
-        
-        Identify and analyze:
-        1. Dominant periods and shifts in competitiveness
-        2. Technical regulation impacts
-        3. Evolution of team performance
-        4. Emerging patterns or cycles
-        5. Significant changes in the competitive landscape
-        
-        Provide comprehensive trend analysis with specific examples.
-      `;
+      const trendsPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'trendsAnalysis', {
+        seasons: seasons,
+        seasonData: constructorData,
+        constructorData: constructorData,
+        raceResults: raceResults
+      });
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are an F1 historian and analyst expert in identifying long-term trends and patterns in Formula 1.',
-        ),
+        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'historian')),
         new HumanMessage(trendsPrompt),
       ]);
 
@@ -387,27 +347,15 @@ export class SeasonAnalysisAgent {
       logger.debug('Generating comprehensive insights');
 
       // Generate comprehensive insights using all collected data
-      const insightPrompt = `
-        Generate comprehensive F1 insights based on the analysis:
-        
-        Season(s): ${seasons.join(', ')}
-        Analysis Results: ${JSON.stringify(results, null, 2)}
-        Previous Insights: ${insights.map((i) => i.text || i).join('\n')}
-        
-        Provide:
-        1. Key takeaways and highlights
-        2. Historical context and significance
-        3. Performance implications
-        4. Future predictions or expectations
-        5. Notable records or achievements
-        
-        Format as executive summary with bullet points for easy reading.
-      `;
+      const insightPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'insightsGeneration', {
+        analysisResults: results,
+        constructorAnalysis: state.constructorAnalysis,
+        trendsAnalysis: state.trendsAnalysis,
+        confidence: state.confidence
+      });
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are an F1 expert providing executive-level insights and analysis for F1 stakeholders.',
-        ),
+        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'executiveAnalyst')),
         new HumanMessage(insightPrompt),
       ]);
 
@@ -439,25 +387,14 @@ export class SeasonAnalysisAgent {
       logger.debug('Synthesizing final results');
 
       // Create final synthesis
-      const synthesisPrompt = `
-        Create a comprehensive response to this F1 query: "${currentQuery}"
-        
-        Analysis Results: ${JSON.stringify(results, null, 2)}
-        Insights: ${insights.map((i) => i.text || i).join('\n\n')}
-        
-        Provide a well-structured, informative response that:
-        1. Directly answers the original query
-        2. Includes relevant data and statistics
-        3. Provides expert analysis and context
-        4. Is engaging and accessible to F1 fans
-        
-        Format with clear sections and bullet points where appropriate.
-      `;
+      const synthesisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'finalSynthesis', {
+        query: currentQuery,
+        insights: insights,
+        confidence: state.confidence
+      });
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are creating the final response to an F1 query. Be comprehensive yet accessible, and ensure you directly address what was asked.',
-        ),
+        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'responseCreator')),
         new HumanMessage(synthesisPrompt),
       ]);
 

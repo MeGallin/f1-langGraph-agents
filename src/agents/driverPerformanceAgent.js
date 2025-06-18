@@ -17,6 +17,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { DriverState } from '../state/schemas.js';
 import logger from '../utils/logger.js';
+import { promptLoader } from '../prompts/prompt-loader.js';
 
 export class DriverPerformanceAgent {
   constructor(langGraphAdapter, options = {}) {
