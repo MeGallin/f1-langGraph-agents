@@ -233,6 +233,14 @@ export class F1MCPClient {
     return this.invoke(toolName, { season });
   }
 
+  async getConstructorStandings(season) {
+    return this.invoke('get_f1_constructor_standings', { season });
+  }
+
+  async getDriverStandings(season) {
+    return this.invoke('get_f1_driver_standings', { season });
+  }
+
   async getConstructors(season) {
     return this.invoke('get_f1_constructors', { season });
   }
@@ -251,6 +259,51 @@ export class F1MCPClient {
 
   async getNextRace() {
     return this.invoke('get_next_f1_race', {});
+  }
+
+  async getSeasonSummary(season) {
+    // This method combines multiple data sources to create a season summary
+    try {
+      const [races, drivers, constructors, driverStandings, constructorStandings] = await Promise.all([
+        this.getRaces(season),
+        this.getDrivers(season),
+        this.getConstructors(season),
+        this.getStandings(season, 'drivers'),
+        this.getStandings(season, 'constructors')
+      ]);
+
+      return {
+        season,
+        totalRaces: races.races?.length || 0,
+        totalDrivers: drivers.drivers?.length || 0,
+        totalConstructors: constructors.constructors?.length || 0,
+        champion: driverStandings.standings?.[0]?.driver || 'Unknown',
+        constructorChampion: constructorStandings.standings?.[0]?.name || 'Unknown',
+        races: races.races || [],
+        drivers: drivers.drivers || [],
+        constructors: constructors.constructors || [],
+        driverStandings: driverStandings.standings || [],
+        constructorStandings: constructorStandings.standings || [],
+        source: races.source || 'live'
+      };
+    } catch (error) {
+      logger.error(`Failed to get season summary for ${season}:`, error);
+      // Return a basic fallback summary
+      return {
+        season,
+        totalRaces: 0,
+        totalDrivers: 0,
+        totalConstructors: 0,
+        champion: 'Data unavailable',
+        constructorChampion: 'Data unavailable',
+        races: [],
+        drivers: [],
+        constructors: [],
+        driverStandings: [],
+        constructorStandings: [],
+        source: 'error_fallback'
+      };
+    }
   }
 }
 
