@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import timeout from 'connect-timeout';
 import 'dotenv/config';
 import logger, { requestLogger } from './utils/logger.js';
 import { f1ErrorMiddleware } from './utils/errorHandler.js';
@@ -10,6 +11,31 @@ import F1LangGraphApp from './app.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 65000; // 65 seconds
+
+// Request timeout middleware (must be first)
+app.use(timeout(REQUEST_TIMEOUT));
+
+// Timeout handler middleware
+app.use((req, res, next) => {
+  if (req.timedout) {
+    logger.warn('Request timeout detected', {
+      method: req.method,
+      url: req.url,
+      timeout: REQUEST_TIMEOUT
+    });
+    
+    if (!res.headersSent) {
+      res.status(408).json({
+        error: 'Request timeout',
+        message: `Request exceeded timeout of ${REQUEST_TIMEOUT}ms`,
+        code: 'REQUEST_TIMEOUT'
+      });
+    }
+    return;
+  }
+  next();
+});
 
 // Security middleware
 app.use(helmet());
@@ -47,7 +73,7 @@ app.use((req, res, next) => {
 const f1App = new F1LangGraphApp({
   enableMemory: process.env.ENABLE_MEMORY !== 'false',
   enableCircuitBreaker: process.env.ENABLE_CIRCUIT_BREAKER !== 'false',
-  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 30000
+  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 60000
 });
 
 // Initialize application on startup
