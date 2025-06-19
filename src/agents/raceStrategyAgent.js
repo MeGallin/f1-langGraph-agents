@@ -29,11 +29,28 @@ export class RaceStrategyAgent {
         temperature: 0.1,
       });
 
+    // Initialize tools
+    this.tools = null;
+    this.modelWithTools = null;
+    this.initializeTools();
+
     // Build the workflow graph
     this.workflow = this.createWorkflow();
     this.app = this.workflow.compile();
 
     logger.info('RaceStrategyAgent initialized');
+  }
+
+  async initializeTools() {
+    try {
+      if (!this.adapter.initialized) {
+        await this.adapter.initialize();
+      }
+      this.tools = this.adapter.getTools();
+      this.modelWithTools = this.model.bindTools(this.tools);
+    } catch (error) {
+      logger.warn('Failed to initialize tools, using direct adapter calls:', error.message);
+    }
   }
   createWorkflow() {
     const workflow = new StateGraph({
@@ -225,32 +242,8 @@ export class RaceStrategyAgent {
         } catch (error) {
           logger.warn('Failed to fetch recent race data:', error.message);
           
-          // Final fallback: Use mock data to demonstrate the functionality
-          raceData['current_race'] = {
-            race: { 
-              raceName: 'Recent F1 Race',
-              season: '2024',
-              round: 'recent',
-              Circuit: { circuitName: 'F1 Circuit' },
-              date: '2024-12-08'
-            },
-            results: [{
-              position: '1',
-              Driver: {
-                givenName: 'Max',
-                familyName: 'Verstappen'
-              },
-              Constructor: {
-                name: 'Red Bull Racing'
-              },
-              Time: { time: '1:26:38.549' },
-              points: '25'
-            }],
-            season: '2024',
-            round: 'recent',
-            isRaceWinnerQuery: true,
-            isMockData: true,
-          };
+          // No fallback - throw error if real data unavailable
+          throw new Error('Unable to fetch recent race data. Please check F1 MCP Server connection.');
         }
 
         return {

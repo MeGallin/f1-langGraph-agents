@@ -1,4 +1,6 @@
 import { F1MCPClient } from '../adapters/f1McpClient.js';
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
 import logger from '../utils/logger.js';
 
 /**
@@ -87,102 +89,77 @@ export class F1LangGraphAdapter {
   // Individual tool creators
 
   createSeasonsTool() {
-    return {
-      name: 'get_f1_seasons',
-      description: 'Get all available F1 seasons from 1950 to present',
-      schema: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-      func: async () => {
+    return tool(
+      async () => {
         return await this.f1Client.getSeasons();
       },
-    };
+      {
+        name: 'get_f1_seasons',
+        description: 'Get all available F1 seasons from 1950 to present',
+        schema: z.object({}),
+      }
+    );
   }
 
   createRacesTool() {
-    return {
-      name: 'get_f1_races',
-      description: 'Get races for a specific F1 season',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year (1950-2025)',
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
+    return tool(
+      async (params) => {
         return await this.f1Client.getRaces(params.year);
       },
-    };
+      {
+        name: 'get_f1_races',
+        description: 'Get races for a specific F1 season',
+        schema: z.object({
+          year: z.number().describe('F1 season year (1950-2025)'),
+        }),
+      }
+    );
   }
 
   createDriversTool() {
-    return {
-      name: 'get_f1_drivers',
-      description: 'Get drivers for a specific F1 season',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year (1950-2025)',
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
+    return tool(
+      async (params) => {
         return await this.f1Client.getDrivers(params.year);
       },
-    };
+      {
+        name: 'get_f1_drivers',
+        description: 'Get drivers for a specific F1 season',
+        schema: z.object({
+          year: z.number().describe('F1 season year (1950-2025)'),
+        }),
+      }
+    );
   }
 
   createConstructorsTool() {
-    return {
-      name: 'get_f1_constructors',
-      description: 'Get constructors/teams for a specific F1 season',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year (1950-2025)',
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
+    return tool(
+      async (params) => {
         return await this.f1Client.getConstructors(params.year);
       },
-    };
+      {
+        name: 'get_f1_constructors',
+        description: 'Get constructors/teams for a specific F1 season',
+        schema: z.object({
+          year: z.number().describe('F1 season year (1950-2025)'),
+        }),
+      }
+    );
   }
 
   createRaceResultsTool() {
-    return {
-      name: 'get_f1_race_results',
-      description: 'Get race results for a specific race',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-          round: {
-            type: 'number',
-            description: 'Race round number',
-          },
-        },
-        required: ['year', 'round'],
-      },
-      func: async (params) => {
+    return tool(
+      async (params) => {
         return await this.f1Client.getRaceResults(params.year, params.round);
       },
-    };
+      {
+        name: 'get_f1_race_results',
+        description: 'Get race results for a specific race',
+        schema: z.object({
+          year: z.number().describe('F1 season year'),
+          round: z.number().describe('Race round number'),
+        }),
+      }
+    );
   }
 
   createQualifyingResultsTool() {
