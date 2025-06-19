@@ -9,6 +9,7 @@ import { StateGraph, START, END } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import logger from '../utils/logger.js';
+import { promptLoader } from '../prompts/prompt-loader.js';
 
 // Import specialized agents
 import { SeasonAnalysisAgent } from './seasonAnalysisAgent.js';
@@ -79,36 +80,19 @@ export class MultiAgentOrchestrator {
     try {
       logger.info('Analyzing query for agent routing', { query: state.query });
 
-      const analysisPrompt = `
-        Analyze this F1 query and determine which specialized agents should handle it:
-        
-        Query: "${state.query}"
-        
-        Available agents:
-        - season: Season analysis, championship standings, constructor performance
-        - driver: Individual driver performance, career analysis, comparisons
-        - race: Race strategy, circuit analysis, race-specific insights
-        - championship: Championship predictions, probability calculations
-        - historical: Cross-era comparisons, historical analysis
-        
-        Respond with JSON containing:
-        {
-          "primaryAgent": "agent_name",
-          "secondaryAgents": ["agent1", "agent2"],
-          "queryType": "description",
-          "complexity": "simple|moderate|complex",
-          "requiresMultipleAgents": boolean,
-          "extractedEntities": {
-            "drivers": ["driver1", "driver2"],
-            "teams": ["team1", "team2"],
-            "seasons": ["2023", "2024"],
-            "races": ["Monaco", "Silverstone"]
-          }
-        }
-      `;
+      const analysisPrompt = promptLoader.getFormattedAnalysisPrompt(
+        'multiAgentOrchestrator',
+        'queryAnalysis',
+        { query: state.query }
+      );
+
+      const systemPrompt = promptLoader.getSystemPrompt(
+        'multiAgentOrchestrator',
+        'queryAnalyzer'
+      );
 
       const response = await this.model.invoke([
-        new SystemMessage('You are an expert F1 query analyzer.'),
+        new SystemMessage(systemPrompt),
         new HumanMessage(analysisPrompt),
       ]);
 
@@ -281,16 +265,30 @@ export class MultiAgentOrchestrator {
         throw new Error('All agents failed to produce results');
       }
 
-      // Create synthesis prompt
-      const synthesisPrompt = this.createSynthesisPrompt(
-        state.query,
-        successfulResults,
+      // Create synthesis prompt using prompt loader
+      const agentResultsText = successfulResults
+        .map((r) => {
+          const result = r.result;
+          return `Agent: ${r.agent}\nAnalysis: ${result.finalResponse || result.analysis || JSON.stringify(result)}\nConfidence: ${result.confidence || 'N/A'}`;
+        })
+        .join('\n---\n');
+
+      const synthesisPrompt = promptLoader.getFormattedAnalysisPrompt(
+        'multiAgentOrchestrator',
+        'resultSynthesis',
+        { 
+          query: state.query,
+          agentResults: agentResultsText
+        }
+      );
+
+      const systemPrompt = promptLoader.getSystemPrompt(
+        'multiAgentOrchestrator',
+        'resultSynthesizer'
       );
 
       const response = await this.model.invoke([
-        new SystemMessage(
-          'You are an expert F1 analyst synthesizing insights from multiple specialized agents.',
-        ),
+        new SystemMessage(systemPrompt),
         new HumanMessage(synthesisPrompt),
       ]);
 
@@ -329,34 +327,6 @@ export class MultiAgentOrchestrator {
     }
   }
 
-  createSynthesisPrompt(query, results) {
-    const resultsSummary = results
-      .map((r) => {
-        const result = r.result;
-        return `
-Agent: ${r.agent}
-Analysis: ${result.finalResponse || result.analysis || JSON.stringify(result)}
-Confidence: ${result.confidence || 'N/A'}
-`;
-      })
-      .join('\n---\n');
-
-    return `
-Original Query: "${query}"
-
-Results from specialized F1 agents:
-${resultsSummary}
-
-Please synthesize these results into a comprehensive, expert-level F1 analysis that:
-1. Directly answers the original query
-2. Integrates insights from all agents
-3. Highlights key findings and patterns
-4. Provides actionable insights
-5. Maintains technical accuracy
-
-Provide a clear, engaging response that demonstrates deep F1 expertise.
-    `;
-  }
 
   calculateOverallConfidence(results) {
     if (results.length === 0) return 0;
@@ -381,38 +351,52 @@ Provide a clear, engaging response that demonstrates deep F1 expertise.
 
     let primaryAgent = 'season';
     const secondaryAgents = [];
+    let queryType = 'general F1 analysis';
 
+    // Check for race winner queries first
     if (
+      (lowerQuery.includes('won') && (lowerQuery.includes('race') || lowerQuery.includes('last'))) ||
+      (lowerQuery.includes('winner') && (lowerQuery.includes('race') || lowerQuery.includes('last'))) ||
+      lowerQuery.includes('who won the last') ||
+      lowerQuery.includes('last race winner')
+    ) {
+      primaryAgent = 'race';
+      queryType = 'race_winner';
+    } else if (
       lowerQuery.includes('driver') ||
       lowerQuery.includes('hamilton') ||
       lowerQuery.includes('verstappen')
     ) {
       primaryAgent = 'driver';
+      queryType = 'driver_analysis';
     } else if (
       lowerQuery.includes('race') ||
       lowerQuery.includes('strategy') ||
       lowerQuery.includes('circuit')
     ) {
       primaryAgent = 'race';
+      queryType = 'race_strategy';
     } else if (
       lowerQuery.includes('championship') ||
       lowerQuery.includes('predict') ||
       lowerQuery.includes('winner')
     ) {
       primaryAgent = 'championship';
+      queryType = 'championship_prediction';
     } else if (
       lowerQuery.includes('compare') ||
       lowerQuery.includes('historical') ||
       lowerQuery.includes('era')
     ) {
       primaryAgent = 'historical';
+      queryType = 'historical_comparison';
     }
 
     return {
       primaryAgent,
       secondaryAgents,
-      queryType: 'general F1 analysis',
-      complexity: 'moderate',
+      queryType,
+      complexity: queryType === 'race_winner' ? 'simple' : 'moderate',
       requiresMultipleAgents: false,
       extractedEntities: {
         drivers: [],
@@ -461,7 +445,6 @@ Provide a clear, engaging response that demonstrates deep F1 expertise.
 
   extractStructuredData(content) {
     // Simple extraction based on keywords
-    const lowerContent = content.toLowerCase();
 
     return {
       primaryAgent: 'season',
