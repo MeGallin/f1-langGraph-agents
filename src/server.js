@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import timeout from 'connect-timeout';
+import cron from 'node-cron';
 import 'dotenv/config';
 import logger, { requestLogger } from './utils/logger.js';
 import { f1ErrorMiddleware } from './utils/errorHandler.js';
@@ -11,7 +12,7 @@ import F1LangGraphApp from './app.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 65000; // 65 seconds
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 125000; // 125 seconds
 
 // Request timeout middleware (must be first)
 app.use(timeout(REQUEST_TIMEOUT));
@@ -73,7 +74,7 @@ app.use((req, res, next) => {
 const f1App = new F1LangGraphApp({
   enableMemory: process.env.ENABLE_MEMORY !== 'false',
   enableCircuitBreaker: process.env.ENABLE_CIRCUIT_BREAKER !== 'false',
-  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 60000
+  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 90000
 });
 
 // Initialize application on startup
@@ -299,6 +300,28 @@ app.use((req, res) => {
   });
 });
 
+// Setup cron jobs for maintenance tasks
+function setupCronJobs(f1App) {
+  // Run every 30 seconds - health check and agent status monitoring
+  cron.schedule('*/30 * * * * *', async () => {
+    try {
+      // Health check
+      const health = await f1App.getHealth();
+      logger.debug('Scheduled health check completed', { 
+        status: health.status,
+        agents: health.agents?.length || 0 
+      });
+      
+      // Optional: Add agent performance monitoring or cache cleanup here
+      
+    } catch (error) {
+      logger.error('Scheduled health check failed:', error);
+    }
+  });
+
+  logger.info('Cron jobs scheduled: health check every 30 seconds');
+}
+
 // Initialize server
 async function startServer() {
   try {
@@ -309,6 +332,9 @@ async function startServer() {
 
     // Initialize services first
     await initializeServices();
+
+    // Setup cron jobs after initialization
+    setupCronJobs(f1App);
 
     app.listen(PORT, () => {
       logger.info('F1 LangGraph Agents server running', {
