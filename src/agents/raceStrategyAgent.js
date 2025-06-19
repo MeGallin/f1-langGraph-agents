@@ -550,6 +550,7 @@ export class RaceStrategyAgent {
         ...state,
         synthesis,
         results: synthesis,
+        finalResponse: synthesis.summary,
         messages: [
           ...(state.messages || []),
           {

@@ -385,6 +385,7 @@ export class DriverPerformanceAgent {
         ...state,
         synthesis,
         results: synthesis,
+        finalResponse: synthesis.summary,
         messages: [
           ...(state.messages || []),
           {

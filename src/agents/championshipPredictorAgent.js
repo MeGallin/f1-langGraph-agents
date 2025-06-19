@@ -424,6 +424,7 @@ export class ChampionshipPredictorAgent {
         ...state,
         synthesis,
         results: synthesis,
+        finalResponse: synthesis.summary,
         messages: [
           ...(state.messages || []),
           {

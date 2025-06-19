@@ -71,6 +71,7 @@ export class HistoricalComparisonAgent {
       return {
         ...state,
         results,
+        finalResponse: results.analysis,
         messages: [
           ...(state.messages || []),
           { role: 'system', content: 'Analysis completed' },
