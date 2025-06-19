@@ -23,7 +23,7 @@ export class MultiAgentOrchestrator {
     this.model =
       options.model ||
       new ChatOpenAI({
-        modelName: 'gpt-4o-mini',
+        modelName: 'gpt-4o',
         temperature: 0.1,
       });
 
@@ -258,7 +258,7 @@ export class MultiAgentOrchestrator {
       case 'driver':
         return await agent.analyzeDriver(query);
       case 'race':
-        return await agent.analyzeRace(query);
+        return await agent.analyzeRaceStrategy(query);
       case 'championship':
         return await agent.predictChampionship(query);
       case 'historical':

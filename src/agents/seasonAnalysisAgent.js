@@ -15,7 +15,7 @@ import { promptLoader } from '../prompts/prompt-loader.js';
  * Specialized agent for comprehensive F1 season analysis and insights
  */
 export class SeasonAnalysisAgent {
-  constructor(options = {}) {
+  constructor(langGraphAdapter, options = {}) {
     this.model =
       options.model ||
       new ChatOpenAI({
@@ -24,7 +24,7 @@ export class SeasonAnalysisAgent {
         maxTokens: 4000,
       });
 
-    this.f1Adapter = new F1LangGraphAdapter(options);
+    this.f1Adapter = langGraphAdapter || new F1LangGraphAdapter(options);
     this.tools = null;
     this.graph = null;
     this.initialized = false;
