@@ -24,7 +24,7 @@ export class F1LangGraphApp {
     this.options = {
       enableMemory: options.enableMemory !== false,
       enableCircuitBreaker: options.enableCircuitBreaker !== false,
-      defaultTimeout: options.defaultTimeout || 30000,
+      defaultTimeout: options.defaultTimeout || 120000,
       ...options
     };
 

@@ -12,7 +12,7 @@ import F1LangGraphApp from './app.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 125000; // 125 seconds
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 180000; // 180 seconds (3 minutes)
 
 // Request timeout middleware (must be first)
 app.use(timeout(REQUEST_TIMEOUT));
@@ -74,7 +74,7 @@ app.use((req, res, next) => {
 const f1App = new F1LangGraphApp({
   enableMemory: process.env.ENABLE_MEMORY !== 'false',
   enableCircuitBreaker: process.env.ENABLE_CIRCUIT_BREAKER !== 'false',
-  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 90000
+  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 150000
 });
 
 // Initialize application on startup

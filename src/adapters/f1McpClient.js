@@ -13,7 +13,7 @@ export class F1MCPClient {
       process.env.F1_MCP_SERVER_URL ||
       'http://localhost:3001';
     this.apiKey = options.apiKey || process.env.OPENAI_API_KEY;
-    this.timeout = options.timeout || 120000; // 2 minutes for Render.com cold starts and complex queries
+    this.timeout = options.timeout || 150000; // 2.5 minutes for Render.com cold starts and complex queries
 
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
