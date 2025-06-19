@@ -3,11 +3,10 @@ import cors from 'cors';
 import helmet from 'helmet';
 import 'dotenv/config';
 import logger, { requestLogger } from './utils/logger.js';
+import { f1ErrorMiddleware } from './utils/errorHandler.js';
 
-// Import agents
-import SeasonAnalysisAgent from './agents/seasonAnalysisAgent.js';
-import MultiAgentOrchestrator from './agents/multiAgentOrchestrator.js';
-import LangGraphAdapter from './adapters/langGraphAdapter.js';
+// Import main application orchestrator
+import F1LangGraphApp from './app.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,187 +43,215 @@ app.use((req, res, next) => {
   next();
 });
 
-// Initialize agents
-const agents = {
-  seasonAnalysis: null,
-  multiAgent: null,
-};
+// Initialize F1 LangGraph Application
+const f1App = new F1LangGraphApp({
+  enableMemory: process.env.ENABLE_MEMORY !== 'false',
+  enableCircuitBreaker: process.env.ENABLE_CIRCUIT_BREAKER !== 'false',
+  defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT) || 30000
+});
 
-// Initialize LangGraph adapter
-const langGraphAdapter = new LangGraphAdapter();
-
-// Initialize adapter on startup
+// Initialize application on startup
 async function initializeServices() {
   try {
-    logger.info('Initializing F1 LangGraph Adapter...');
-    await langGraphAdapter.initialize();
-    logger.info('F1 LangGraph Adapter initialized successfully');
+    logger.info('Initializing F1 LangGraph Application...');
+    await f1App.initialize();
+    logger.info('F1 LangGraph Application initialized successfully');
   } catch (error) {
-    logger.warn('F1 LangGraph Adapter initialization failed - agents will use fallback mode:', error.message);
+    logger.error('F1 LangGraph Application initialization failed:', error.message);
+    throw error;
   }
 }
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  const health = {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    service: 'f1-langgraph-agents',
-    version: process.env.npm_package_version || '1.0.0',
-    agents: {
-      seasonAnalysis: agents.seasonAnalysis?.initialized || false,
-      multiAgent: agents.multiAgent !== null,
-    },
-    environment: process.env.NODE_ENV || 'development',
-  };
-
-  res.json(health);
+app.get('/health', async (req, res) => {
+  try {
+    const health = await f1App.getHealth();
+    const statusCode = health.status === 'healthy' ? 200 : 
+                      health.status === 'degraded' ? 206 : 500;
+    
+    res.status(statusCode).json({
+      ...health,
+      service: 'f1-langgraph-agents',
+      version: process.env.npm_package_version || '1.0.0',
+      environment: process.env.NODE_ENV || 'development',
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Agent information endpoint
 app.get('/agents', (req, res) => {
-  const agentInfo = {
-    available: Object.keys(agents),
-    details: {},
-  };
-
-  // Get info from initialized agents
-  Object.entries(agents).forEach(([name, agent]) => {
-    if (agent && agent.initialized) {
-      agentInfo.details[name] = agent.getInfo();
-    } else {
-      agentInfo.details[name] = { status: 'not_initialized' };
-    }
-  });
-
-  res.json(agentInfo);
+  try {
+    const agents = f1App.getAvailableAgents();
+    res.json({
+      available: Object.keys(agents),
+      details: agents,
+      total: Object.keys(agents).length
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to get agent information',
+      message: error.message
+    });
+  }
 });
 
-// Multi-Agent Orchestrator endpoint
-app.post('/agents/analyze', async (req, res) => {
+// Main F1 query processing endpoint
+app.post('/query', async (req, res) => {
   try {
-    const { query, options = {} } = req.body;
+    const { query, threadId, userContext = {} } = req.body;
 
     if (!query) {
       return res.status(400).json({
+        success: false,
         error: 'Query is required',
         message: 'Please provide a query string in the request body',
       });
     }
 
-    // Initialize multi-agent orchestrator if not already done
-    if (!agents.multiAgent) {
-      logger.info('Initializing Multi-Agent Orchestrator');
-      agents.multiAgent = new MultiAgentOrchestrator(langGraphAdapter);
-    }
-
-    // Process the query through the orchestrator
-    const result = await agents.multiAgent.processQuery(query, options);
+    // Process the query through the complete LangGraph workflow
+    const result = await f1App.processQuery(query, threadId, userContext);
 
     res.json(result);
+
   } catch (error) {
-    logger.error('Multi-agent analysis failed', {
+    logger.error('F1 query processing failed', {
       error: error.message,
-      query: req.body.query,
+      query: req.body.query?.substring(0, 100),
+      threadId: req.body.threadId
     });
 
     res.status(500).json({
       success: false,
-      error: 'Analysis failed',
+      error: 'Query processing failed',
       message: error.message,
       query: req.body.query,
     });
   }
 });
 
-// Season analysis endpoint
-app.post('/agents/season/analyze', async (req, res) => {
-  try {
-    const { query, options = {} } = req.body;
+// Legacy multi-agent endpoint (for backward compatibility)
+app.post('/agents/analyze', async (req, res) => {
+  const { query, options = {} } = req.body;
+  
+  // Redirect to main query endpoint
+  req.body = {
+    query,
+    threadId: options.threadId || `legacy_${Date.now()}`,
+    userContext: options.userContext || {}
+  };
+  
+  // Forward to main query handler
+  return app._router.handle(
+    { ...req, method: 'POST', url: '/query' },
+    res,
+    () => {}
+  );
+});
 
-    if (!query) {
-      return res.status(400).json({
-        error: 'Query is required',
-        message: 'Please provide a query string in the request body',
+// Conversation history endpoint
+app.get('/conversations/:threadId', async (req, res) => {
+  try {
+    const { threadId } = req.params;
+    const { limit, offset, includeMetadata } = req.query;
+    
+    const history = await f1App.getConversationHistory(threadId, {
+      limit: parseInt(limit) || 50,
+      offset: parseInt(offset) || 0,
+      includeMetadata: includeMetadata === 'true'
+    });
+
+    res.json({
+      threadId,
+      history,
+      total: history.length
+    });
+
+  } catch (error) {
+    if (error.code === 'MEMORY_DISABLED') {
+      return res.status(501).json({
+        error: 'Memory not enabled',
+        message: 'Conversation history requires memory to be enabled'
       });
     }
 
-    // Initialize agent if not already done
-    if (!agents.seasonAnalysis) {
-      logger.info('Initializing Season Analysis Agent');
-      agents.seasonAnalysis = new SeasonAnalysisAgent(langGraphAdapter);
-      await agents.seasonAnalysis.initialize();
+    res.status(500).json({
+      error: 'Failed to get conversation history',
+      message: error.message
+    });
+  }
+});
+
+// Conversation summary endpoint
+app.get('/conversations/:threadId/summary', async (req, res) => {
+  try {
+    const { threadId } = req.params;
+    const summary = await f1App.getConversationSummary(threadId);
+
+    if (!summary) {
+      return res.status(404).json({
+        error: 'Conversation not found',
+        threadId
+      });
     }
 
-    // Analyze the query
-    const result = await agents.seasonAnalysis.analyze(query, options);
+    res.json(summary);
 
-    res.json({
-      success: true,
-      query,
-      result: {
-        finalResponse: result.finalResponse,
-        confidence: result.confidence,
-        analysisType: result.analysisType,
-        seasons: result.seasons,
-        insights: result.insights,
-        completedAt: result.completedAt,
-      },
-    });
   } catch (error) {
-    logger.error('Season analysis failed', {
-      error: error.message,
-      query: req.body.query,
-    });
+    if (error.code === 'MEMORY_DISABLED') {
+      return res.status(501).json({
+        error: 'Memory not enabled',
+        message: 'Conversation summary requires memory to be enabled'
+      });
+    }
 
     res.status(500).json({
-      error: 'Analysis failed',
-      message: error.message,
-      query: req.body.query,
+      error: 'Failed to get conversation summary',
+      message: error.message
     });
   }
 });
 
-// Generic agent endpoint for future expansion
-app.post('/agents/:agentType/analyze', async (req, res) => {
-  const { agentType } = req.params;
+// Analytics endpoint
+app.get('/analytics', async (req, res) => {
+  try {
+    const { days, agentType } = req.query;
+    const analytics = await f1App.getAnalytics({
+      days: parseInt(days) || 7,
+      agentType
+    });
 
-  // For now, only season analysis is implemented
-  if (agentType === 'season') {
-    return (req.originalUrl = '/agents/season/analyze');
+    res.json(analytics);
+
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to get analytics',
+      message: error.message
+    });
   }
-
-  res.status(404).json({
-    error: 'Agent not found',
-    message: `Agent type '${agentType}' is not available`,
-    available: ['season'],
-  });
 });
 
-// Error handling middleware
-app.use((error, req, res, next) => {
-  logger.error('Unhandled error', {
-    error: error.message,
-    stack: error.stack,
-    url: req.url,
-    method: req.method,
-  });
-
-  res.status(500).json({
-    error: 'Internal server error',
-    message:
-      process.env.NODE_ENV === 'development'
-        ? error.message
-        : 'Something went wrong',
-  });
-});
+// Use F1 error handling middleware
+app.use(f1ErrorMiddleware);
 
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
     message: `Route ${req.method} ${req.url} not found`,
-    available: ['GET /health', 'GET /agents', 'POST /agents/analyze', 'POST /agents/season/analyze'],
+    available: [
+      'GET /health',
+      'GET /agents', 
+      'POST /query',
+      'GET /conversations/:threadId',
+      'GET /conversations/:threadId/summary',
+      'GET /analytics'
+    ],
   });
 });
 
@@ -239,17 +266,12 @@ async function startServer() {
     // Initialize services first
     await initializeServices();
 
-    // Pre-initialize the season analysis agent
-    logger.info('Pre-initializing Season Analysis Agent...');
-    agents.seasonAnalysis = new SeasonAnalysisAgent(langGraphAdapter);
-    await agents.seasonAnalysis.initialize();
-    logger.info('Season Analysis Agent ready');
-
     app.listen(PORT, () => {
       logger.info('F1 LangGraph Agents server running', {
         port: PORT,
         health: `http://localhost:${PORT}/health`,
         agents: `http://localhost:${PORT}/agents`,
+        query: `http://localhost:${PORT}/query`
       });
     });
   } catch (error) {
@@ -259,13 +281,15 @@ async function startServer() {
 }
 
 // Handle graceful shutdown
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   logger.info('Received SIGINT, shutting down gracefully');
+  await f1App.cleanup();
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   logger.info('Received SIGTERM, shutting down gracefully');
+  await f1App.cleanup();
   process.exit(0);
 });
 
