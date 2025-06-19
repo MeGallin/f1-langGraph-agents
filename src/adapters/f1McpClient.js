@@ -42,16 +42,6 @@ export class F1MCPClient {
         status: error.response?.status,
         statusText: error.response?.statusText
       });
-      
-      // Return a fallback response for offline development
-      if (error.code === 'ECONNREFUSED' || error.response?.status >= 500) {
-        logger.warn('MCP server unavailable, using fallback mode');
-        return { 
-          status: 'fallback', 
-          timestamp: new Date().toISOString(),
-          message: 'MCP server unavailable, using mock data'
-        };
-      }
       throw error;
     }
   }
@@ -63,7 +53,6 @@ export class F1MCPClient {
     try {
       logger.info(`Invoking F1 MCP tool: ${toolName}`, { parameters });
 
-      // Try to make real HTTP request to MCP server
       const response = await this.httpClient.post('/tools/invoke', {
         tool: toolName,
         parameters: parameters
@@ -81,62 +70,11 @@ export class F1MCPClient {
         status: error.response?.status,
         statusText: error.response?.statusText
       });
-
-      // Fallback to mock data if MCP server is unavailable
-      if (error.code === 'ECONNREFUSED' || error.response?.status >= 500) {
-        logger.warn(`Using mock data for tool: ${toolName}`);
-        return this._getMockResponse(toolName, parameters);
-      }
       
       throw error;
     }
   }
 
-  /**
-   * Get mock response for development/fallback
-   */
-  _getMockResponse(toolName, parameters) {
-    const mockResponses = {
-      get_drivers: {
-        drivers: [
-          { name: 'Lewis Hamilton', team: 'Mercedes', number: 44 },
-          { name: 'Max Verstappen', team: 'Red Bull Racing', number: 1 },
-          { name: 'Charles Leclerc', team: 'Ferrari', number: 16 }
-        ],
-        source: 'mock_data'
-      },
-      get_races: {
-        races: [
-          { name: 'Monaco Grand Prix', date: '2024-05-26', round: 8 },
-          { name: 'Canadian Grand Prix', date: '2024-06-09', round: 9 }
-        ],
-        source: 'mock_data'
-      },
-      get_standings: {
-        standings: [
-          { position: 1, driver: 'Max Verstappen', points: 393 },
-          { position: 2, driver: 'Lando Norris', points: 331 },
-          { position: 3, driver: 'Charles Leclerc', points: 307 }
-        ],
-        source: 'mock_data'
-      },
-      get_constructors: {
-        constructors: [
-          { name: 'Red Bull Racing', points: 589 },
-          { name: 'McLaren', points: 521 },
-          { name: 'Ferrari', points: 407 }
-        ],
-        source: 'mock_data'
-      },
-    };
-
-    return mockResponses[toolName] || {
-      result: 'Mock response - MCP server unavailable',
-      toolName,
-      parameters,
-      source: 'mock_data'
-    };
-  }
 
   /**
    * Get available tools from the MCP server
@@ -153,65 +91,11 @@ export class F1MCPClient {
         message: error.message,
         status: error.response?.status
       });
-
-      // Fallback to mock tool definitions
-      if (error.code === 'ECONNREFUSED' || error.response?.status >= 500) {
-        logger.warn('Using mock tool definitions');
-        return this._getMockTools();
-      }
       
       throw error;
     }
   }
 
-  /**
-   * Get mock tool definitions for development/fallback
-   */
-  _getMockTools() {
-    return [
-      {
-        name: 'get_drivers',
-        description: 'Get F1 drivers information',
-        parameters: {
-          type: 'object',
-          properties: {
-            season: { type: 'string', description: 'Season year' },
-          },
-        },
-      },
-      {
-        name: 'get_races',
-        description: 'Get F1 races information',
-        parameters: {
-          type: 'object',
-          properties: {
-            season: { type: 'string', description: 'Season year' },
-          },
-        },
-      },
-      {
-        name: 'get_standings',
-        description: 'Get F1 championship standings',
-        parameters: {
-          type: 'object',
-          properties: {
-            season: { type: 'string', description: 'Season year' },
-            type: { type: 'string', enum: ['drivers', 'constructors'] },
-          },
-        },
-      },
-      {
-        name: 'get_constructors',
-        description: 'Get F1 constructors information',
-        parameters: {
-          type: 'object',
-          properties: {
-            season: { type: 'string', description: 'Season year' },
-          },
-        },
-      },
-    ];
-  }
 
   /**
    * Convenience methods for common F1 data operations
@@ -263,47 +147,27 @@ export class F1MCPClient {
 
   async getSeasonSummary(season) {
     // This method combines multiple data sources to create a season summary
-    try {
-      const [races, drivers, constructors, driverStandings, constructorStandings] = await Promise.all([
-        this.getRaces(season),
-        this.getDrivers(season),
-        this.getConstructors(season),
-        this.getStandings(season, 'drivers'),
-        this.getStandings(season, 'constructors')
-      ]);
+    const [races, drivers, constructors, driverStandings, constructorStandings] = await Promise.all([
+      this.getRaces(season),
+      this.getDrivers(season),
+      this.getConstructors(season),
+      this.getStandings(season, 'drivers'),
+      this.getStandings(season, 'constructors')
+    ]);
 
-      return {
-        season,
-        totalRaces: races.races?.length || 0,
-        totalDrivers: drivers.drivers?.length || 0,
-        totalConstructors: constructors.constructors?.length || 0,
-        champion: driverStandings.standings?.[0]?.driver || 'Unknown',
-        constructorChampion: constructorStandings.standings?.[0]?.name || 'Unknown',
-        races: races.races || [],
-        drivers: drivers.drivers || [],
-        constructors: constructors.constructors || [],
-        driverStandings: driverStandings.standings || [],
-        constructorStandings: constructorStandings.standings || [],
-        source: races.source || 'live'
-      };
-    } catch (error) {
-      logger.error(`Failed to get season summary for ${season}:`, error);
-      // Return a basic fallback summary
-      return {
-        season,
-        totalRaces: 0,
-        totalDrivers: 0,
-        totalConstructors: 0,
-        champion: 'Data unavailable',
-        constructorChampion: 'Data unavailable',
-        races: [],
-        drivers: [],
-        constructors: [],
-        driverStandings: [],
-        constructorStandings: [],
-        source: 'error_fallback'
-      };
-    }
+    return {
+      season,
+      totalRaces: races.races?.length || 0,
+      totalDrivers: drivers.drivers?.length || 0,
+      totalConstructors: constructors.constructors?.length || 0,
+      champion: driverStandings.standings?.[0]?.driver || 'Unknown',
+      constructorChampion: constructorStandings.standings?.[0]?.name || 'Unknown',
+      races: races.races || [],
+      drivers: drivers.drivers || [],
+      constructors: constructors.constructors || [],
+      driverStandings: driverStandings.standings || [],
+      constructorStandings: constructorStandings.standings || []
+    };
   }
 }
 

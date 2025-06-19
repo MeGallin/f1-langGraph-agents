@@ -53,6 +53,17 @@ const agents = {
 // Initialize LangGraph adapter
 const langGraphAdapter = new LangGraphAdapter();
 
+// Initialize adapter on startup
+async function initializeServices() {
+  try {
+    logger.info('Initializing F1 LangGraph Adapter...');
+    await langGraphAdapter.initialize();
+    logger.info('F1 LangGraph Adapter initialized successfully');
+  } catch (error) {
+    logger.warn('F1 LangGraph Adapter initialization failed - agents will use fallback mode:', error.message);
+  }
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   const health = {
@@ -141,7 +152,7 @@ app.post('/agents/season/analyze', async (req, res) => {
     // Initialize agent if not already done
     if (!agents.seasonAnalysis) {
       logger.info('Initializing Season Analysis Agent');
-      agents.seasonAnalysis = new SeasonAnalysisAgent();
+      agents.seasonAnalysis = new SeasonAnalysisAgent(langGraphAdapter);
       await agents.seasonAnalysis.initialize();
     }
 
@@ -225,9 +236,12 @@ async function startServer() {
       environment: process.env.NODE_ENV || 'development',
     });
 
+    // Initialize services first
+    await initializeServices();
+
     // Pre-initialize the season analysis agent
     logger.info('Pre-initializing Season Analysis Agent...');
-    agents.seasonAnalysis = new SeasonAnalysisAgent();
+    agents.seasonAnalysis = new SeasonAnalysisAgent(langGraphAdapter);
     await agents.seasonAnalysis.initialize();
     logger.info('Season Analysis Agent ready');
 
