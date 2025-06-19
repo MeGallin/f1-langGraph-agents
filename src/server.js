@@ -137,21 +137,39 @@ app.post('/query', async (req, res) => {
 
 // Legacy multi-agent endpoint (for backward compatibility)
 app.post('/agents/analyze', async (req, res) => {
-  const { query, options = {} } = req.body;
-  
-  // Redirect to main query endpoint
-  req.body = {
-    query,
-    threadId: options.threadId || `legacy_${Date.now()}`,
-    userContext: options.userContext || {}
-  };
-  
-  // Forward to main query handler
-  return app._router.handle(
-    { ...req, method: 'POST', url: '/query' },
-    res,
-    () => {}
-  );
+  try {
+    const { query, options = {} } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query is required',
+        message: 'Please provide a query string in the request body',
+      });
+    }
+
+    // Process query directly with F1 app
+    const result = await f1App.processQuery(
+      query,
+      options.threadId || `legacy_${Date.now()}`,
+      options.userContext || {}
+    );
+
+    res.json(result);
+
+  } catch (error) {
+    logger.error('Legacy agent analysis failed', {
+      error: error.message,
+      query: req.body.query?.substring(0, 100)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Agent analysis failed',
+      message: error.message,
+      query: req.body.query,
+    });
+  }
 });
 
 // Conversation history endpoint
