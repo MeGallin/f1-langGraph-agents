@@ -7,13 +7,20 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/**/*.test.js",
-    "test:watch": "node --test --watch test/**/*.test.js",
+    "test": "node --test test/integrationTest.js",
+    "test:watch": "node --test --watch test/integrationTest.js",
+    "test:coverage": "c8 npm test",
     "lint": "eslint src/ test/",
     "lint:fix": "eslint src/ test/ --fix",
-    "docker:build": "docker build -t f1-langgraph-agents .",
-    "docker:run": "docker run -p 3000:3000 f1-langgraph-agents",
-    "deploy:check": "node scripts/deploy-check.js"
+    "health:check": "curl -f http://localhost:3000/health || echo 'Health check failed'",
+    "health:detailed": "curl -f http://localhost:3000/health/detailed",
+    "analytics": "curl -f http://localhost:3000/analytics",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node src/server.js",
+    "build": "echo 'No build step required for Node.js'",
+    "clean": "rm -rf logs/*.log database/*.sqlite",
+    "setup:env": "cp .env.example .env && echo 'Please edit .env with your configuration'",
+    "backup:db": "tar -czf backup-$(date +%Y%m%d_%H%M%S).tar.gz database/",
+    "monitor": "npm run health:detailed && npm run analytics"
   },
   "keywords": [
     "f1",
@@ -30,6 +37,9 @@
     "@langchain/core": "^0.3.16",
     "@langchain/langgraph": "^0.2.19",
     "@langchain/openai": "^0.3.14",
+    "@langchain/anthropic": "^0.3.5",
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "@modelcontextprotocol/server-filesystem": "^0.6.0",
     "axios": "^1.6.2",
     "connect-timeout": "^1.9.0",
     "cors": "^2.8.5",
@@ -40,7 +50,10 @@
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "winston": "^3.11.0",
-    "zod": "^3.25.67"
+    "zod": "^3.25.67",
+    "uuid": "^10.0.0",
+    "express-rate-limit": "^7.4.1",
+    "compression": "^1.7.4"
   },
   "devDependencies": {
     "eslint": "^8.56.0",

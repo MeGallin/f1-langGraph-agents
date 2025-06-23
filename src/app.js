@@ -1,382 +1,579 @@
 /**
- * F1 LangGraph Application Orchestrator
- * Main application class that coordinates the entire F1 analysis workflow
+ * Modern F1 LangGraph Application Orchestrator
+ * Uses LangGraph.js v0.2 patterns with streaming, checkpointing, and modern architecture
  */
 
-import { ChatOpenAI } from '@langchain/openai';
-import F1GraphState from './utils/graphState.js';
-import F1StartNode from './utils/startNode.js';
-import F1RouterAgent from './agents/routerAgent.js';
-import F1ChatMemory from './memory/chatMemory.js';
-import LangGraphAdapter from './adapters/langGraphAdapter.js';
+import { StateGraph, START, END } from '@langchain/langgraph';
+import { MemorySaver } from '@langchain/langgraph';
+import ModernF1LangGraphAdapter from './adapters/langGraphAdapter.js';
+import ModernF1StateManager from './state/graphState.js';
+import ModernSeasonAnalysisAgent from './agents/seasonAnalysisAgent.js';
 import { globalErrorHandler, F1Error } from './utils/errorHandler.js';
 import logger from './utils/logger.js';
+import rateLimit from 'express-rate-limit';
 
-// Import specialized agents
-import SeasonAnalysisAgent from './agents/seasonAnalysisAgent.js';
-import DriverPerformanceAgent from './agents/driverPerformanceAgent.js';
-import RaceStrategyAgent from './agents/raceStrategyAgent.js';
-import ChampionshipPredictorAgent from './agents/championshipPredictorAgent.js';
-import HistoricalComparisonAgent from './agents/historicalComparisonAgent.js';
-
-export class F1LangGraphApp {
+export class ModernF1LangGraphApp {
   constructor(options = {}) {
     this.options = {
       enableMemory: options.enableMemory !== false,
-      enableCircuitBreaker: options.enableCircuitBreaker !== false,
-      defaultTimeout: options.defaultTimeout || 120000,
+      enableStreaming: options.enableStreaming !== false,
+      enableCheckpointing: options.enableCheckpointing !== false,
+      enableHumanInLoop: options.enableHumanInLoop || false,
+      defaultTimeout: options.defaultTimeout || 150000,
+      maxRetries: options.maxRetries || 3,
+      llmProvider: options.llmProvider || 'openai',
+      rateLimitEnabled: options.rateLimitEnabled !== false,
       ...options
     };
 
     // Initialize core components
-    this.llm = this.initializeLLM();
-    this.langGraphAdapter = new LangGraphAdapter();
-    this.startNode = new F1StartNode();
-    this.memory = null;
-    this.agents = {};
-    this.router = null;
+    this.f1Adapter = new ModernF1LangGraphAdapter(this.options);
+    this.stateManager = new ModernF1StateManager(this.options);
     
-    this.logger = logger;
+    // Initialize agents
+    this.agents = {};
+    this.availableAgentTypes = [
+      'seasonAnalysis',
+      'driverPerformance', 
+      'raceStrategy',
+      'championshipPredictor',
+      'historicalComparison'
+    ];
+    
+    // State graph for workflow orchestration
+    this.workflowGraph = null;
+    this.memorySaver = new MemorySaver();
+    
+    // Application state
     this.isInitialized = false;
+    this.healthStatus = 'initializing';
+    
+    // Rate limiting
+    this.rateLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100, // limit each IP to 100 requests per windowMs
+      message: 'Too many requests from this IP, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    logger.info('ModernF1LangGraphApp initialized', {
+      enableMemory: this.options.enableMemory,
+      enableStreaming: this.options.enableStreaming,
+      enableCheckpointing: this.options.enableCheckpointing
+    });
   }
 
   /**
-   * Initialize the F1 LangGraph application
+   * Initialize the complete F1 application
    */
   async initialize() {
     try {
-      this.logger.info('F1LangGraphApp: Starting initialization');
-
-      // Initialize LangGraph adapter
-      await this.langGraphAdapter.initialize();
+      logger.info('Starting ModernF1LangGraphApp initialization...');
       
-      // Initialize memory if enabled
-      if (this.options.enableMemory) {
-        this.memory = new F1ChatMemory();
-        await this.memory.initialize();
-      }
+      this.healthStatus = 'initializing';
+
+      // Initialize F1 adapter
+      logger.info('Initializing F1 adapter...');
+      await this.f1Adapter.initialize();
 
       // Initialize agents
-      this.agents = await this.initializeAgents();
-      
-      // Initialize router
-      this.router = new F1RouterAgent(this.llm, {
-        timeout: this.options.defaultTimeout,
-        enableCircuitBreaker: this.options.enableCircuitBreaker
-      });
+      logger.info('Initializing agents...');
+      await this.initializeAgents();
+
+      // Initialize workflow graph
+      logger.info('Initializing workflow graph...');
+      await this.initializeWorkflowGraph();
+
+      // Set up error handling
+      this.setupErrorHandling();
 
       this.isInitialized = true;
-      
-      this.logger.info('F1LangGraphApp: Initialization completed successfully', {
+      this.healthStatus = 'healthy';
+
+      logger.info('ModernF1LangGraphApp initialization completed successfully', {
         agentCount: Object.keys(this.agents).length,
-        memoryEnabled: !!this.memory,
-        circuitBreakerEnabled: this.options.enableCircuitBreaker
+        healthStatus: this.healthStatus
       });
 
+      return true;
     } catch (error) {
-      this.logger.error('F1LangGraphApp: Initialization failed', {
-        error: error.message
+      this.healthStatus = 'unhealthy';
+      logger.error('ModernF1LangGraphApp initialization failed', {
+        error: error.message,
+        stack: error.stack
       });
       throw new F1Error(
-        `Failed to initialize F1 LangGraph application: ${error.message}`,
-        'INITIALIZATION_FAILED',
+        `Application initialization failed: ${error.message}`,
+        'APP_INIT_FAILED',
         { originalError: error }
       );
     }
   }
 
   /**
-   * Process F1 query through the complete LangGraph workflow
+   * Initialize all agents
+   */
+  async initializeAgents() {
+    try {
+      // Initialize Season Analysis Agent
+      this.agents.seasonAnalysis = new ModernSeasonAnalysisAgent(this.options);
+      await this.agents.seasonAnalysis.initialize(this.f1Adapter);
+
+      // TODO: Initialize other agents as they are created
+      // this.agents.driverPerformance = new ModernDriverPerformanceAgent(this.options);
+      // await this.agents.driverPerformance.initialize(this.f1Adapter);
+
+      logger.info('All agents initialized successfully', {
+        agentCount: Object.keys(this.agents).length,
+        agentTypes: Object.keys(this.agents)
+      });
+    } catch (error) {
+      logger.error('Failed to initialize agents', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize the workflow graph for orchestration
+   */
+  async initializeWorkflowGraph() {
+    try {
+      // Create the workflow graph
+      const workflow = new StateGraph({
+        channels: {
+          query: String,
+          threadId: String,
+          userContext: Object,
+          currentStep: String,
+          agentType: String,
+          result: Object,
+          errors: Array
+        }
+      });
+
+      // Add nodes
+      workflow.addNode("query_analyzer", this.analyzeQuery.bind(this));
+      workflow.addNode("agent_router", this.routeToAgent.bind(this));
+      workflow.addNode("season_analysis", this.runSeasonAnalysis.bind(this));
+      workflow.addNode("result_formatter", this.formatResult.bind(this));
+      workflow.addNode("error_handler", this.handleError.bind(this));
+
+      // Add edges
+      workflow.addEdge(START, "query_analyzer");
+      workflow.addEdge("query_analyzer", "agent_router");
+      
+      // Conditional routing based on agent type
+      workflow.addConditionalEdges(
+        "agent_router",
+        this.routingCondition.bind(this),
+        {
+          "season_analysis": "season_analysis",
+          "error": "error_handler"
+        }
+      );
+
+      workflow.addEdge("season_analysis", "result_formatter");
+      workflow.addEdge("result_formatter", END);
+      workflow.addEdge("error_handler", END);
+
+      // Compile the graph
+      this.workflowGraph = workflow.compile({
+        checkpointer: this.options.enableCheckpointing ? this.memorySaver : undefined
+      });
+
+      logger.info('Workflow graph initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize workflow graph', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Process F1 query through the modern workflow
    */
   async processQuery(query, threadId, userContext = {}) {
     if (!this.isInitialized) {
       throw new F1Error(
         'Application not initialized. Call initialize() first.',
-        'NOT_INITIALIZED'
+        'APP_NOT_INITIALIZED'
       );
     }
 
     const startTime = Date.now();
+    threadId = threadId || `thread_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    return globalErrorHandler.executeWithResilience(
-      async () => {
-        // 1. StartNode - Initialize workflow
-        this.logger.info('F1LangGraphApp: Starting query processing', {
-          query: query.substring(0, 100) + '...',
-          threadId,
-          hasUserContext: Object.keys(userContext).length > 0
-        });
-
-        let state = await this.startNode.processWithAnalysis(query, threadId, userContext);
-
-        // 2. RouterAgent - Determine target agent
-        this.logger.debug('F1LangGraphApp: Routing query to specialized agent');
-        state = await this.router.route(state);
-
-        // 3. SpecializedAgent - Process with domain expertise
-        this.logger.debug('F1LangGraphApp: Processing with specialized agent', {
-          selectedAgent: state.state.selectedAgent,
-          confidence: state.state.confidence
-        });
-        
-        const selectedAgent = this.agents[state.state.selectedAgent];
-        if (!selectedAgent) {
-          throw new F1Error(
-            `Selected agent '${state.state.selectedAgent}' not available`,
-            'AGENT_NOT_FOUND'
-          );
-        }
-
-        state = await this.processWithSpecializedAgent(selectedAgent, state);
-
-        // 4. Memory - Persist conversation
-        if (this.memory) {
-          await this.persistConversation(state);
-        }
-
-        // 5. Response - Assemble final response
-        const response = this.assembleResponse(state, startTime);
-
-        this.logger.info('F1LangGraphApp: Query processing completed', {
-          threadId,
-          selectedAgent: state.state.selectedAgent,
-          confidence: state.state.confidence,
-          processingTime: Date.now() - startTime,
-          success: true
-        });
-
-        return response;
-
-      },
-      {
-        operation: 'processQuery',
-        useCircuitBreaker: this.options.enableCircuitBreaker,
-        timeout: this.options.defaultTimeout,
-        fallbackFn: (error) => this.createFallbackResponse(query, threadId, error)
-      }
-    );
-  }
-
-  /**
-   * Process query with specialized agent
-   */
-  async processWithSpecializedAgent(agent, state) {
-    const agentType = state.state.selectedAgent;
-    
     try {
-      // Call the appropriate agent method
-      let agentResult;
-      
-      switch (agentType) {
-        case 'season':
-          agentResult = await agent.analyze(state.state.query);
-          break;
-        case 'driver':
-          agentResult = await agent.analyzeDriver(state.state.query);
-          break;
-        case 'race':
-          agentResult = await agent.analyzeRaceStrategy(state.state.query);
-          break;
-        case 'championship':
-          agentResult = await agent.predictChampionship(state.state.query);
-          break;
-        case 'historical':
-          agentResult = await agent.compareHistorical(state.state.query);
-          break;
-        default:
-          throw new F1Error(`Unknown agent type: ${agentType}`, 'UNKNOWN_AGENT_TYPE');
-      }
-
-      // Update state with agent response
-      return state.updateState({
-        agentResponse: agentResult,
-        f1Data: agentResult.f1Data || null,
-        metadata: {
-          ...state.state.metadata,
-          agentProcessingTime: agentResult.processingTime || 0,
-          agentApiCalls: agentResult.apiCalls || 0
-        }
-      }).addNodeToSequence(agentType);
-
-    } catch (error) {
-      this.logger.error('F1LangGraphApp: Specialized agent processing failed', {
-        agentType,
-        error: error.message
-      });
-
-      // Set error state but don't throw - let error handler manage fallbacks
-      return state.setError(error).addNodeToSequence(`${agentType}_error`);
-    }
-  }
-
-  /**
-   * Persist conversation to memory
-   */
-  async persistConversation(state) {
-    try {
-      const { query, threadId, selectedAgent, agentResponse, confidence } = state.state;
-
-      // Save user message
-      await this.memory.saveMessage(threadId, 'user', query, {
-        userContext: state.state.userContext,
-        queryType: state.state.metadata.initialQueryType
-      });
-
-      // Save assistant response
-      if (agentResponse) {
-        await this.memory.saveMessage(threadId, 'assistant', 
-          agentResponse.finalResponse || agentResponse.analysis || 'Analysis completed',
-          {
-            agentType: selectedAgent,
-            confidence,
-            f1Data: state.state.f1Data,
-            queryType: state.state.metadata.initialQueryType,
-            processingTime: state.state.metadata.processingTime,
-            apiCalls: state.state.metadata.apiCalls,
-            nodeSequence: state.state.metadata.nodeSequence
-          }
-        );
-      }
-
-      this.logger.debug('F1LangGraphApp: Conversation persisted to memory', {
+      logger.info('Processing query through modern workflow', {
         threadId,
-        agentType: selectedAgent
+        queryPreview: query.substring(0, 100) + '...'
       });
+
+      // Create initial state
+      const initialState = this.stateManager.createInitialState(query, threadId, userContext);
+
+      // Process through workflow graph
+      const config = { 
+        configurable: { thread_id: threadId },
+        streamMode: this.options.enableStreaming ? "values" : undefined
+      };
+
+      const input = {
+        query,
+        threadId,
+        userContext,
+        currentStep: 'query_analysis',
+        errors: []
+      };
+
+      let result;
+      
+      if (this.options.enableStreaming) {
+        result = await this.processWithStreaming(input, config, threadId);
+      } else {
+        result = await this.workflowGraph.invoke(input, config);
+      }
+
+      // Update final state
+      await this.stateManager.completeAnalysis(threadId, result);
+
+      const duration = Date.now() - startTime;
+
+      logger.info('Query processing completed successfully', {
+        threadId,
+        duration,
+        streaming: this.options.enableStreaming
+      });
+
+      return {
+        success: true,
+        threadId,
+        result: result.result || result,
+        duration,
+        streaming: this.options.enableStreaming,
+        metadata: {
+          workflowUsed: true,
+          agentType: result.agentType,
+          stepsCompleted: result.currentStep
+        }
+      };
 
     } catch (error) {
-      this.logger.warn('F1LangGraphApp: Failed to persist conversation', {
-        threadId: state.state.threadId,
-        error: error.message
+      const duration = Date.now() - startTime;
+      
+      // Update state with error
+      await this.stateManager.addError(threadId, error.message);
+      
+      logger.error('Query processing failed', {
+        threadId,
+        error: error.message,
+        duration
       });
-      // Don't throw - memory persistence failure shouldn't break the response
-    }
-  }
 
-  /**
-   * Assemble final response
-   */
-  assembleResponse(state, startTime) {
-    const {
-      query,
-      threadId,
-      selectedAgent,
-      agentResponse,
-      confidence,
-      f1Data,
-      metadata,
-      error
-    } = state.state;
-
-    const response = {
-      success: !error,
-      query,
-      threadId,
-      agent: selectedAgent,
-      confidence,
-      response: agentResponse?.finalResponse || agentResponse?.analysis || 'Analysis completed',
-      metadata: {
-        ...metadata,
-        totalProcessingTime: Date.now() - startTime,
-        nodeSequence: metadata.nodeSequence,
-        completedAt: new Date().toISOString()
-      }
-    };
-
-    // Include additional data if available
-    if (agentResponse?.insights) {
-      response.insights = agentResponse.insights;
-    }
-
-    if (agentResponse?.analysisType) {
-      response.analysisType = agentResponse.analysisType;
-    }
-
-    if (f1Data) {
-      response.f1Data = f1Data;
-    }
-
-    if (error) {
-      response.error = {
-        message: error.message,
-        code: error.code || 'PROCESSING_ERROR',
-        timestamp: error.timestamp
+      return {
+        success: false,
+        threadId,
+        error: error.message,
+        duration,
+        metadata: {
+          workflowUsed: true,
+          failed: true
+        }
       };
     }
-
-    return response;
   }
 
   /**
-   * Create fallback response when main processing fails
+   * Process with streaming support
    */
-  createFallbackResponse(query, threadId, error) {
-    this.logger.warn('F1LangGraphApp: Creating fallback response', {
-      query: query.substring(0, 100),
-      threadId,
-      error: error.message
+  async processWithStreaming(input, config, threadId) {
+    const chunks = [];
+    const streamingResult = {
+      streaming: true,
+      chunks: [],
+      threadId
+    };
+
+    try {
+      for await (const chunk of await this.workflowGraph.stream(input, config)) {
+        chunks.push(chunk);
+        streamingResult.chunks.push({
+          timestamp: Date.now(),
+          data: chunk
+        });
+      }
+
+      // Get final state
+      const finalState = await this.workflowGraph.getState(config);
+      streamingResult.result = finalState.values;
+      
+      return streamingResult;
+    } catch (error) {
+      streamingResult.error = error.message;
+      throw error;
+    }
+  }
+
+  /**
+   * Workflow node: Analyze query to determine processing approach
+   */
+  async analyzeQuery(state) {
+    try {
+      logger.debug('Analyzing query', { threadId: state.threadId });
+      
+      const query = state.query.toLowerCase();
+      let agentType = 'general';
+      
+      // Simple query analysis logic
+      if (query.includes('season') || query.includes('championship') || query.includes('year')) {
+        agentType = 'season_analysis';
+      } else if (query.includes('driver') || query.includes('performance')) {
+        agentType = 'driver_performance';
+      } else if (query.includes('race') || query.includes('strategy')) {
+        agentType = 'race_strategy';
+      }
+
+      return {
+        ...state,
+        currentStep: 'agent_routing',
+        agentType,
+        metadata: {
+          ...state.metadata,
+          queryAnalysisCompleted: true
+        }
+      };
+    } catch (error) {
+      logger.error('Query analysis failed', { error: error.message });
+      return {
+        ...state,
+        currentStep: 'error',
+        errors: [...state.errors, `Query analysis failed: ${error.message}`]
+      };
+    }
+  }
+
+  /**
+   * Workflow node: Route to appropriate agent
+   */
+  async routeToAgent(state) {
+    try {
+      logger.debug('Routing to agent', { 
+        threadId: state.threadId, 
+        agentType: state.agentType 
+      });
+
+      return {
+        ...state,
+        currentStep: state.agentType,
+        metadata: {
+          ...state.metadata,
+          routingCompleted: true
+        }
+      };
+    } catch (error) {
+      logger.error('Agent routing failed', { error: error.message });
+      return {
+        ...state,
+        currentStep: 'error',
+        errors: [...state.errors, `Agent routing failed: ${error.message}`]
+      };
+    }
+  }
+
+  /**
+   * Workflow node: Run season analysis
+   */
+  async runSeasonAnalysis(state) {
+    try {
+      logger.debug('Running season analysis', { threadId: state.threadId });
+      
+      const agent = this.agents.seasonAnalysis;
+      if (!agent) {
+        throw new Error('Season analysis agent not available');
+      }
+
+      const result = await agent.analyzeSeason(
+        state.query, 
+        state.threadId, 
+        state.userContext
+      );
+
+      return {
+        ...state,
+        currentStep: 'result_formatting',
+        result,
+        metadata: {
+          ...state.metadata,
+          agentExecuted: 'seasonAnalysis'
+        }
+      };
+    } catch (error) {
+      logger.error('Season analysis failed', { error: error.message });
+      return {
+        ...state,
+        currentStep: 'error',
+        errors: [...state.errors, `Season analysis failed: ${error.message}`]
+      };
+    }
+  }
+
+  /**
+   * Workflow node: Format final result
+   */
+  async formatResult(state) {
+    try {
+      logger.debug('Formatting result', { threadId: state.threadId });
+      
+      const formattedResult = {
+        ...state.result,
+        workflow: {
+          completed: true,
+          stepsExecuted: [
+            'query_analysis',
+            'agent_routing', 
+            state.agentType,
+            'result_formatting'
+          ],
+          metadata: state.metadata
+        }
+      };
+
+      return {
+        ...state,
+        currentStep: 'completed',
+        result: formattedResult
+      };
+    } catch (error) {
+      logger.error('Result formatting failed', { error: error.message });
+      return {
+        ...state,
+        currentStep: 'error',
+        errors: [...state.errors, `Result formatting failed: ${error.message}`]
+      };
+    }
+  }
+
+  /**
+   * Workflow node: Handle errors
+   */
+  async handleError(state) {
+    logger.error('Workflow error handler activated', {
+      threadId: state.threadId,
+      errors: state.errors
     });
 
     return {
-      success: false,
-      query,
-      threadId,
-      agent: 'fallback',
-      confidence: 0.1,
-      response: 'I apologize, but I encountered difficulties processing your F1 query. Please try rephrasing your question or asking about a specific aspect of Formula 1.',
-      isFallback: true,
-      error: {
-        message: error.message,
-        code: error.code || 'FALLBACK_RESPONSE',
-        timestamp: new Date().toISOString()
-      },
-      metadata: {
-        nodeSequence: ['start', 'error', 'fallback'],
-        completedAt: new Date().toISOString()
+      ...state,
+      currentStep: 'error_handled',
+      result: {
+        success: false,
+        errors: state.errors,
+        message: 'An error occurred during processing'
       }
     };
   }
 
   /**
-   * Initialize LLM
+   * Routing condition for workflow
    */
-  initializeLLM() {
-    return new ChatOpenAI({
-      modelName: process.env.OPENAI_MODEL || 'gpt-4o',
-      temperature: 0.1,
-      timeout: this.options.defaultTimeout
+  routingCondition(state) {
+    if (state.errors && state.errors.length > 0) {
+      return 'error';
+    }
+    
+    switch (state.agentType) {
+      case 'season_analysis':
+        return 'season_analysis';
+      default:
+        return 'error';
+    }
+  }
+
+  /**
+   * Setup global error handling
+   */
+  setupErrorHandling() {
+    process.on('unhandledRejection', (reason, promise) => {
+      logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    });
+
+    process.on('uncaughtException', (error) => {
+      logger.error('Uncaught Exception:', error);
+      process.exit(1);
     });
   }
 
   /**
-   * Initialize all specialized agents
+   * Get application health status
    */
-  async initializeAgents() {
-    const agents = {};
+  async getHealth() {
+    try {
+      const adapterHealth = await this.f1Adapter.healthCheck();
+      const agentHealthChecks = await Promise.allSettled(
+        Object.entries(this.agents).map(async ([type, agent]) => {
+          const health = await agent.getHealth();
+          return { type, health };
+        })
+      );
+
+      const agentHealth = agentHealthChecks.map(result => 
+        result.status === 'fulfilled' ? result.value : { error: result.reason.message }
+      );
+
+      return {
+        status: this.healthStatus,
+        initialized: this.isInitialized,
+        f1Adapter: adapterHealth,
+        agents: agentHealth,
+        stateManager: {
+          activeThreads: this.stateManager.getActiveThreads().length,
+          statistics: this.stateManager.getStatistics()
+        },
+        options: this.options
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        error: error.message,
+        initialized: this.isInitialized
+      };
+    }
+  }
+
+  /**
+   * Get available agents
+   */
+  getAvailableAgents() {
+    return Object.entries(this.agents).reduce((acc, [type, agent]) => {
+      acc[type] = agent.getInfo();
+      return acc;
+    }, {});
+  }
+
+  /**
+   * Get conversation history
+   */
+  async getConversationHistory(threadId, options = {}) {
+    if (!this.options.enableMemory) {
+      throw new F1Error('Memory not enabled', 'MEMORY_DISABLED');
+    }
 
     try {
-      // Initialize each agent with the shared LangGraph adapter
-      agents.season = new SeasonAnalysisAgent(this.langGraphAdapter);
-      agents.driver = new DriverPerformanceAgent(this.langGraphAdapter);
-      agents.race = new RaceStrategyAgent(this.langGraphAdapter);
-      agents.championship = new ChampionshipPredictorAgent(this.langGraphAdapter);
-      agents.historical = new HistoricalComparisonAgent(this.langGraphAdapter);
+      const state = this.stateManager.getState(threadId);
+      
+      // Get conversation history from workflow graph
+      const config = { configurable: { thread_id: threadId } };
+      const graphState = await this.workflowGraph.getState(config);
 
-      // Initialize agents that require it
-      for (const [name, agent] of Object.entries(agents)) {
-        if (typeof agent.initialize === 'function') {
-          await agent.initialize();
-          this.logger.debug(`F1LangGraphApp: Initialized ${name} agent`);
-        }
-      }
-
-      this.logger.info('F1LangGraphApp: All agents initialized successfully', {
-        agentTypes: Object.keys(agents)
-      });
-
-      return agents;
-
+      return {
+        threadId,
+        state: state,
+        workflow: graphState,
+        options
+      };
     } catch (error) {
-      this.logger.error('F1LangGraphApp: Failed to initialize agents', {
+      logger.error('Failed to get conversation history', {
+        threadId,
         error: error.message
       });
       throw error;
@@ -384,140 +581,55 @@ export class F1LangGraphApp {
   }
 
   /**
-   * Get conversation history
-   */
-  async getConversationHistory(threadId, options = {}) {
-    if (!this.memory) {
-      throw new F1Error('Memory not enabled', 'MEMORY_DISABLED');
-    }
-
-    return this.memory.getConversationHistory(threadId, options);
-  }
-
-  /**
-   * Get conversation summary
-   */
-  async getConversationSummary(threadId) {
-    if (!this.memory) {
-      throw new F1Error('Memory not enabled', 'MEMORY_DISABLED');
-    }
-
-    return this.memory.getConversationSummary(threadId);
-  }
-
-  /**
-   * Get application health status
-   */
-  async getHealth() {
-    const health = {
-      status: 'healthy',
-      initialized: this.isInitialized,
-      timestamp: new Date().toISOString(),
-      components: {}
-    };
-
-    try {
-      // Check adapter health
-      health.components.adapter = {
-        status: this.langGraphAdapter?.isInitialized ? 'healthy' : 'unhealthy',
-        initialized: this.langGraphAdapter?.isInitialized || false
-      };
-
-      // Check memory health
-      if (this.memory) {
-        health.components.memory = await this.memory.getHealth();
-      } else {
-        health.components.memory = { status: 'disabled' };
-      }
-
-      // Check agents health
-      health.components.agents = {};
-      for (const [name, agent] of Object.entries(this.agents)) {
-        health.components.agents[name] = {
-          status: agent ? 'healthy' : 'unhealthy',
-          initialized: !!agent
-        };
-      }
-
-      // Check router health
-      health.components.router = {
-        status: this.router ? 'healthy' : 'unhealthy',
-        stats: this.router?.getRoutingStats() || null
-      };
-
-      // Check error handler health
-      health.components.errorHandler = globalErrorHandler.getStats();
-
-      // Overall status
-      const unhealthyComponents = Object.values(health.components)
-        .filter(component => component.status === 'unhealthy').length;
-
-      if (unhealthyComponents > 0) {
-        health.status = 'degraded';
-      }
-
-    } catch (error) {
-      health.status = 'unhealthy';
-      health.error = error.message;
-    }
-
-    return health;
-  }
-
-  /**
-   * Get available agents information
-   */
-  getAvailableAgents() {
-    return {
-      season: {
-        name: 'Season Analysis Agent',
-        description: 'Analyzes F1 season data, championship standings, and constructor performance',
-        capabilities: ['Season statistics', 'Team performance', 'Championship standings']
-      },
-      driver: {
-        name: 'Driver Performance Agent',
-        description: 'Examines individual driver performance, career statistics, and comparisons',
-        capabilities: ['Driver statistics', 'Career analysis', 'Performance comparisons']
-      },
-      race: {
-        name: 'Race Strategy Agent',
-        description: 'Provides insights on race strategy, circuit analysis, and race-specific information',
-        capabilities: ['Race strategy', 'Circuit analysis', 'Lap time analysis']
-      },
-      championship: {
-        name: 'Championship Predictor Agent',
-        description: 'Makes predictions about championship outcomes with probability calculations',
-        capabilities: ['Title predictions', 'Points projections', 'Scenario modeling']
-      },
-      historical: {
-        name: 'Historical Comparison Agent',
-        description: 'Offers cross-era comparisons and historical data analysis',
-        capabilities: ['Era comparisons', 'Historical statistics', 'Legacy assessment']
-      }
-    };
-  }
-
-  /**
-   * Get system analytics
+   * Get analytics
    */
   async getAnalytics(options = {}) {
-    if (!this.memory) {
-      return { error: 'Analytics require memory to be enabled' };
-    }
-
-    return this.memory.getAnalytics(options);
+    const stateStats = this.stateManager.getStatistics();
+    
+    return {
+      application: {
+        initialized: this.isInitialized,
+        healthStatus: this.healthStatus,
+        agentCount: Object.keys(this.agents).length
+      },
+      state: stateStats,
+      options
+    };
   }
 
   /**
    * Cleanup resources
    */
   async cleanup() {
-    if (this.memory) {
-      await this.memory.close();
+    try {
+      logger.info('Starting application cleanup...');
+      
+      // Cleanup agents
+      await Promise.all(
+        Object.values(this.agents).map(agent => agent.cleanup())
+      );
+      
+      // Cleanup adapter
+      await this.f1Adapter.cleanup();
+      
+      // Cleanup state manager
+      this.stateManager.cleanup();
+      
+      this.isInitialized = false;
+      this.healthStatus = 'shutdown';
+      
+      logger.info('Application cleanup completed successfully');
+    } catch (error) {
+      logger.error('Error during application cleanup', { error: error.message });
     }
+  }
 
-    this.logger.info('F1LangGraphApp: Cleanup completed');
+  /**
+   * Get rate limiter middleware
+   */
+  getRateLimiter() {
+    return this.options.rateLimitEnabled ? this.rateLimiter : (req, res, next) => next();
   }
 }
 
-export default F1LangGraphApp;
+export default ModernF1LangGraphApp;

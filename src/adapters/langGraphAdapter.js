@@ -1,84 +1,276 @@
-import { F1MCPClient } from '../adapters/f1McpClient.js';
+/**
+ * Modern LangGraph Adapter for F1 MCP Integration
+ * Uses LangGraph.js v0.2 patterns with proper state management and streaming
+ */
+
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { SimpleF1MCPClient } from './simpleMcpClient.js';
 import logger from '../utils/logger.js';
 
-/**
- * LangGraph Tools Adapter for F1 MCP Integration
- * Converts F1 MCP tools into LangGraph-compatible tool definitions
- */
-export class F1LangGraphAdapter {
+export class ModernF1LangGraphAdapter {
   constructor(options = {}) {
-    this.f1Client = new F1MCPClient(options);
-    this.tools = null;
+    this.options = {
+      enableStreaming: options.enableStreaming !== false,
+      enableRetry: options.enableRetry !== false,
+      maxRetries: options.maxRetries || 3,
+      timeout: options.timeout || 150000,
+      ...options
+    };
+
+    this.mcpClient = new SimpleF1MCPClient(options);
+    this.tools = [];
+    this.toolMap = new Map();
     this.initialized = false;
+
+    logger.info('ModernF1LangGraphAdapter initialized', {
+      enableStreaming: this.options.enableStreaming,
+      enableRetry: this.options.enableRetry
+    });
   }
 
   /**
-   * Initialize the adapter and load tools
+   * Initialize the adapter with modern MCP client
    */
   async initialize() {
     try {
-      // Test connection to F1 MCP server
-      await this.f1Client.healthCheck();
+      logger.info('Initializing Modern F1 LangGraph Adapter...');
 
-      // Load available tools
-      const mcpTools = await this.f1Client.getTools();
+      // Initialize MCP client
+      await this.mcpClient.initialize();
 
-      // Convert MCP tools to LangGraph format
-      this.tools = this.convertMCPToolsToLangGraph(mcpTools);
+      // Create LangGraph tools from available MCP tools
+      this.tools = await this.createLangGraphTools();
 
       this.initialized = true;
-      logger.info('F1 LangGraph Adapter initialized', {
-        toolCount: this.tools.length,
+
+      logger.info('Modern F1 LangGraph Adapter initialized successfully', {
+        toolCount: this.tools.length
       });
 
       return this.tools;
     } catch (error) {
-      logger.error('Failed to initialize F1 LangGraph Adapter', {
-        error: error.message,
+      logger.error('Failed to initialize Modern F1 LangGraph Adapter', {
+        error: error.message
       });
       throw error;
     }
   }
 
   /**
-   * Convert MCP tools to LangGraph tool format
+   * Create LangGraph tools using modern patterns
    */
-  convertMCPToolsToLangGraph(mcpTools) {
-    const langGraphTools = []; // Map of MCP tool names to LangGraph tool definitions
-    const toolMappings = {
-      get_seasons: this.createSeasonsTool(),
-      get_races: this.createRacesTool(),
-      get_drivers: this.createDriversTool(),
-      get_constructors: this.createConstructorsTool(),
-      get_race_results: this.createRaceResultsTool(),
-      get_qualifying_results: this.createQualifyingResultsTool(),
-      get_driver_standings: this.createDriverStandingsTool(),
-      get_constructor_standings: this.createConstructorStandingsTool(),
-      get_circuit_info: this.createCircuitInfoTool(),
-      get_all_circuits: this.createAllCircuitsTool(),
-      get_driver_info: this.createDriverInfoTool(),
-      get_constructor_info: this.createConstructorInfoTool(),
-      get_season_summary: this.createSeasonSummaryTool(),
-      get_current_season: this.createCurrentSeasonTool(),
-    };
+  async createLangGraphTools() {
+    const availableTools = this.mcpClient.getAvailableTools();
+    const langGraphTools = [];
 
-    // Convert available MCP tools
-    if (Array.isArray(mcpTools)) {
-      mcpTools.forEach((tool) => {
-        const toolName = tool.name;
-        if (toolMappings[toolName]) {
-          langGraphTools.push(toolMappings[toolName]);
-        }
-      });
+    // Define tool schemas and create tools
+    const toolDefinitions = this.getToolDefinitions();
+
+    for (const mcpTool of availableTools) {
+      const toolDef = toolDefinitions[mcpTool.name];
+      
+      if (toolDef) {
+        const langGraphTool = this.createTool(mcpTool.name, toolDef);
+        langGraphTools.push(langGraphTool);
+        this.toolMap.set(mcpTool.name, langGraphTool);
+      }
     }
 
     return langGraphTools;
   }
 
   /**
-   * Get tools for LangGraph agents
+   * Create a single LangGraph tool with modern patterns
+   */
+  createTool(toolName, definition) {
+    return tool(
+      async (params, config) => {
+        try {
+          // Add streaming support if enabled
+          if (this.options.enableStreaming && config?.callbacks) {
+            await config.callbacks.handleToolStart?.(
+              { name: toolName },
+              params,
+              config.runId
+            );
+          }
+
+          // Invoke MCP tool with retry logic
+          const result = await this.invokeWithRetry(toolName, params);
+          
+          // Stream the result if enabled
+          if (this.options.enableStreaming && config?.callbacks) {
+            await config.callbacks.handleToolEnd?.(
+              result,
+              config.runId
+            );
+          }
+
+          return result;
+        } catch (error) {
+          if (this.options.enableStreaming && config?.callbacks) {
+            await config.callbacks.handleToolError?.(
+              error,
+              config.runId
+            );
+          }
+          throw error;
+        }
+      },
+      {
+        name: toolName,
+        description: definition.description,
+        schema: definition.schema,
+        returnDirect: definition.returnDirect || false
+      }
+    );
+  }
+
+  /**
+   * Invoke MCP tool with retry logic
+   */
+  async invokeWithRetry(toolName, params, attempt = 1) {
+    try {
+      const result = await this.mcpClient.invokeTool(toolName, params);
+      return this.mcpClient.extractContent(result);
+    } catch (error) {
+      if (this.options.enableRetry && attempt < this.options.maxRetries) {
+        logger.warn(`Tool invocation failed, retrying (${attempt}/${this.options.maxRetries})`, {
+          toolName,
+          error: error.message
+        });
+        
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        
+        return this.invokeWithRetry(toolName, params, attempt + 1);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Get tool definitions with proper schemas
+   */
+  getToolDefinitions() {
+    return {
+      get_f1_seasons: {
+        description: 'Get all available F1 seasons from 1950 to present',
+        schema: z.object({}),
+        returnDirect: false
+      },
+      
+      get_current_f1_season: {
+        description: 'Get information about the current F1 season',
+        schema: z.object({}),
+        returnDirect: false
+      },
+      
+      get_f1_races: {
+        description: 'Get race schedule for a specific F1 season',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year (1950-2025)')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_race_details: {
+        description: 'Get detailed information about a specific race',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year'),
+          round: z.number().min(1).describe('Race round number')
+        }),
+        returnDirect: false
+      },
+      
+      get_current_f1_race: {
+        description: 'Get information about the current/ongoing F1 race',
+        schema: z.object({}),
+        returnDirect: false
+      },
+      
+      get_next_f1_race: {
+        description: 'Get information about the next scheduled F1 race',
+        schema: z.object({}),
+        returnDirect: false
+      },
+      
+      get_f1_drivers: {
+        description: 'Get drivers participating in a specific F1 season',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_driver_details: {
+        description: 'Get detailed information about a specific driver',
+        schema: z.object({
+          driverId: z.string().describe('Driver ID (e.g., "hamilton", "verstappen")'),
+          year: z.number().min(1950).max(2025).optional().describe('Optional: specific year filter')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_constructors: {
+        description: 'Get constructors/teams participating in a specific F1 season',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_constructor_details: {
+        description: 'Get detailed information about a specific constructor/team',
+        schema: z.object({
+          constructorId: z.string().describe('Constructor ID (e.g., "mercedes", "ferrari", "red_bull")'),
+          year: z.number().min(1950).max(2025).optional().describe('Optional: specific year filter')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_race_results: {
+        description: 'Get race results and finishing positions for a specific race',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year'),
+          round: z.number().min(1).describe('Race round number')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_qualifying_results: {
+        description: 'Get qualifying session results for a specific race',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year'),
+          round: z.number().min(1).describe('Race round number')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_driver_standings: {
+        description: 'Get driver championship standings for a season',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year'),
+          round: z.number().min(1).optional().describe('Optional: specific round number')
+        }),
+        returnDirect: false
+      },
+      
+      get_f1_constructor_standings: {
+        description: 'Get constructor championship standings for a season',
+        schema: z.object({
+          year: z.number().min(1950).max(2025).describe('F1 season year'),
+          round: z.number().min(1).optional().describe('Optional: specific round number')
+        }),
+        returnDirect: false
+      }
+    };
+  }
+
+  /**
+   * Get all available LangGraph tools
    */
   getTools() {
     if (!this.initialized) {
@@ -86,293 +278,63 @@ export class F1LangGraphAdapter {
     }
     return this.tools;
   }
-  // Individual tool creators
 
-  createSeasonsTool() {
-    return tool(
-      async () => {
-        return await this.f1Client.getSeasons();
-      },
-      {
-        name: 'get_f1_seasons',
-        description: 'Get all available F1 seasons from 1950 to present',
-        schema: z.object({}),
-      }
-    );
+  /**
+   * Get specific tool by name
+   */
+  getTool(toolName) {
+    return this.toolMap.get(toolName);
   }
 
-  createRacesTool() {
-    return tool(
-      async (params) => {
-        return await this.f1Client.getRaces(params.year);
-      },
-      {
-        name: 'get_f1_races',
-        description: 'Get races for a specific F1 season',
-        schema: z.object({
-          year: z.number().describe('F1 season year (1950-2025)'),
-        }),
-      }
-    );
+  /**
+   * Health check
+   */
+  async healthCheck() {
+    try {
+      const mcpHealth = await this.mcpClient.healthCheck();
+      
+      return {
+        status: this.initialized && mcpHealth.status === 'healthy' ? 'healthy' : 'unhealthy',
+        initialized: this.initialized,
+        toolCount: this.tools.length,
+        mcpClient: mcpHealth
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        error: error.message,
+        initialized: this.initialized
+      };
+    }
   }
 
-  createDriversTool() {
-    return tool(
-      async (params) => {
-        return await this.f1Client.getDrivers(params.year);
-      },
-      {
-        name: 'get_f1_drivers',
-        description: 'Get drivers for a specific F1 season',
-        schema: z.object({
-          year: z.number().describe('F1 season year (1950-2025)'),
-        }),
-      }
-    );
+  /**
+   * Cleanup resources
+   */
+  async cleanup() {
+    try {
+      await this.mcpClient.disconnect();
+      this.initialized = false;
+      this.tools = [];
+      this.toolMap.clear();
+      
+      logger.info('ModernF1LangGraphAdapter cleaned up successfully');
+    } catch (error) {
+      logger.error('Error during adapter cleanup', { error: error.message });
+    }
   }
 
-  createConstructorsTool() {
-    return tool(
-      async (params) => {
-        return await this.f1Client.getConstructors(params.year);
-      },
-      {
-        name: 'get_f1_constructors',
-        description: 'Get constructors/teams for a specific F1 season',
-        schema: z.object({
-          year: z.number().describe('F1 season year (1950-2025)'),
-        }),
-      }
-    );
-  }
-
-  createRaceResultsTool() {
-    return tool(
-      async (params) => {
-        return await this.f1Client.getRaceResults(params.year, params.round);
-      },
-      {
-        name: 'get_f1_race_results',
-        description: 'Get race results for a specific race',
-        schema: z.object({
-          year: z.number().describe('F1 season year'),
-          round: z.number().describe('Race round number'),
-        }),
-      }
-    );
-  }
-
-  createQualifyingResultsTool() {
+  /**
+   * Get adapter information
+   */
+  getInfo() {
     return {
-      name: 'get_f1_qualifying_results',
-      description: 'Get qualifying results for a specific race',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-          round: {
-            type: 'number',
-            description: 'Race round number',
-          },
-        },
-        required: ['year', 'round'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getQualifyingResults(
-          params.year,
-          params.round,
-        );
-      },
-    };
-  }
-
-  createDriverStandingsTool() {
-    return {
-      name: 'get_f1_driver_standings',
-      description: 'Get driver championship standings',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-          round: {
-            type: 'number',
-            description: 'Optional: specific round number',
-            optional: true,
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getDriverStandings(
-          params.year,
-          params.round,
-        );
-      },
-    };
-  }
-
-  createConstructorStandingsTool() {
-    return {
-      name: 'get_f1_constructor_standings',
-      description: 'Get constructor championship standings',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-          round: {
-            type: 'number',
-            description: 'Optional: specific round number',
-            optional: true,
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getConstructorStandings(
-          params.year,
-          params.round,
-        );
-      },
-    };
-  }
-
-  createCircuitInfoTool() {
-    return {
-      name: 'get_f1_circuit_info',
-      description: 'Get circuit information for a specific race',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-          round: {
-            type: 'number',
-            description: 'Race round number',
-          },
-        },
-        required: ['year', 'round'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getCircuitInfo(params.year, params.round);
-      },
-    };
-  }
-
-  createAllCircuitsTool() {
-    return {
-      name: 'get_all_f1_circuits',
-      description: 'Get information about all F1 circuits',
-      schema: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-      func: async () => {
-        return await this.f1Client.getAllCircuits();
-      },
-    };
-  }
-
-  createDriverInfoTool() {
-    return {
-      name: 'get_f1_driver_info',
-      description: 'Get detailed information about a specific driver',
-      schema: {
-        type: 'object',
-        properties: {
-          driver_id: {
-            type: 'string',
-            description: 'Driver ID (e.g., "hamilton", "verstappen")',
-          },
-          year: {
-            type: 'number',
-            description: 'Optional: specific year filter',
-            optional: true,
-          },
-        },
-        required: ['driver_id'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getDriverInfo(params.driver_id, params.year);
-      },
-    };
-  }
-
-  createConstructorInfoTool() {
-    return {
-      name: 'get_f1_constructor_info',
-      description: 'Get detailed information about a specific constructor',
-      schema: {
-        type: 'object',
-        properties: {
-          constructor_id: {
-            type: 'string',
-            description:
-              'Constructor ID (e.g., "mercedes", "ferrari", "red_bull")',
-          },
-          year: {
-            type: 'number',
-            description: 'Optional: specific year filter',
-            optional: true,
-          },
-        },
-        required: ['constructor_id'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getConstructorInfo(
-          params.constructor_id,
-          params.year,
-        );
-      },
-    };
-  }
-
-  createSeasonSummaryTool() {
-    return {
-      name: 'get_f1_season_summary',
-      description: 'Get comprehensive summary of an F1 season',
-      schema: {
-        type: 'object',
-        properties: {
-          year: {
-            type: 'number',
-            description: 'F1 season year',
-          },
-        },
-        required: ['year'],
-      },
-      func: async (params) => {
-        return await this.f1Client.getSeasonSummary(params.year);
-      },
-    };
-  }
-
-  createCurrentSeasonTool() {
-    return {
-      name: 'get_current_f1_season',
-      description: 'Get information about the current F1 season',
-      schema: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-      func: async () => {
-        const currentYear = new Date().getFullYear();
-        return await this.f1Client.getSeasonSummary(currentYear);
-      },
+      initialized: this.initialized,
+      toolCount: this.tools.length,
+      availableTools: Array.from(this.toolMap.keys()),
+      options: this.options
     };
   }
 }
 
-export default F1LangGraphAdapter;
+export default ModernF1LangGraphAdapter;

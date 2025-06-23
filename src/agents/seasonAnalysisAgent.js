@@ -1,495 +1,415 @@
-import { StateGraph, START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  AIMessage,
-} from '@langchain/core/messages';
-import { F1LangGraphAdapter } from '../adapters/langGraphAdapter.js';
-import { SeasonState, StateUtils } from '../state/schemas.js';
-import logger from '../utils/logger.js';
-import { promptLoader } from '../prompts/prompt-loader.js';
-
 /**
- * F1 Season Analysis Agent
- * Specialized agent for comprehensive F1 season analysis and insights
+ * Modern Season Analysis Agent
+ * Uses LangGraph.js v0.2 patterns with streaming, checkpointing, and proper state management
  */
-export class SeasonAnalysisAgent {
-  constructor(langGraphAdapter, options = {}) {
-    this.model =
-      options.model ||
-      new ChatOpenAI({
-        modelName: process.env.DEFAULT_MODEL || 'gpt-4o',
-        temperature: parseFloat(process.env.DEFAULT_TEMPERATURE) || 0.1,
-        maxTokens: 4000,
-      });
 
-    this.f1Adapter = langGraphAdapter || new F1LangGraphAdapter(options);
-    this.tools = null;
-    this.graph = null;
-    this.initialized = false;
+import ModernBaseAgent from './baseAgent.js';
+import { SystemMessage } from '@langchain/core/messages';
+import logger from '../utils/logger.js';
+import { promptLoader } from '../prompts/index.js';
 
-    // Agent configuration
-    this.maxIterations = parseInt(process.env.MAX_ITERATIONS) || 10;
-    this.timeout = parseInt(process.env.AGENT_TIMEOUT) || 30000;
-  }
-
-  /**
-   * Initialize the agent
-   */
-  async initialize() {
-    try {
-      // Initialize F1 adapter and get tools
-      this.tools = await this.f1Adapter.initialize();
-
-      // Build the season analysis workflow
-      this.graph = this.buildWorkflow();
-
-      this.initialized = true;
-      logger.info('Season Analysis Agent initialized successfully');
-
-      return this;
-    } catch (error) {
-      logger.error('Failed to initialize Season Analysis Agent', {
-        error: error.message,
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Build the LangGraph workflow for season analysis
-   */
-  buildWorkflow() {
-    // Use channel-based configuration instead of class
-    const workflow = new StateGraph({
-      channels: {
-        messages: { default: () => [] },
-        currentQuery: { default: () => '' },
-        selectedSeason: { default: () => null },
-        selectedDriver: { default: () => null },
-        selectedRace: { default: () => null },
-        selectedConstructor: { default: () => null },
-        analysisType: { default: () => 'season' },
-        results: { default: () => [] },
-        insights: { default: () => [] },
-        confidence: { default: () => 0 },
-        timestamp: { default: () => new Date().toISOString() },
-        seasons: { default: () => [] },
-        constructorData: { default: () => [] },
-        raceResults: { default: () => [] },
-        championshipStandings: { default: () => [] },
-        trends: { default: () => [] },
-        finalResponse: { default: () => '' },
-        completedAt: { default: () => null },
-      },
+export class ModernSeasonAnalysisAgent extends ModernBaseAgent {
+  constructor(options = {}) {
+    super('seasonAnalysis', {
+      enableStreaming: true,
+      enableCheckpointing: true,
+      temperature: 0.1,
+      ...options
     });
 
-    // Add nodes
-    workflow.addNode('analyzeQuery', this.analyzeQueryNode.bind(this));
-    workflow.addNode('fetchSeasonData', this.fetchSeasonDataNode.bind(this));
-    workflow.addNode(
-      'analyzeConstructors',
-      this.analyzeConstructorsNode.bind(this),
-    );
-    workflow.addNode('analyzeTrends', this.analyzeTrendsNode.bind(this));
-    workflow.addNode('generateInsights', this.generateInsightsNode.bind(this));
-    workflow.addNode(
-      'synthesizeResults',
-      this.synthesizeResultsNode.bind(this),
-    );
-
-    // Define workflow edges
-    workflow.setEntryPoint('analyzeQuery');
-    workflow.addEdge('analyzeQuery', 'fetchSeasonData');
-    workflow.addConditionalEdges(
-      'fetchSeasonData',
-      this.routeSeasonAnalysis.bind(this),
-      {
-        single_season: 'analyzeConstructors',
-        multi_season: 'analyzeTrends',
-        end: END,
-      },
-    );
-    workflow.addEdge('analyzeConstructors', 'generateInsights');
-    workflow.addEdge('analyzeTrends', 'generateInsights');
-    workflow.addEdge('generateInsights', 'synthesizeResults');
-    workflow.addEdge('synthesizeResults', END);
-
-    return workflow.compile();
+    this.analysisCapabilities = [
+      'multi_season_comparison',
+      'constructor_performance_tracking',
+      'driver_career_analysis',
+      'regulation_impact_assessment',
+      'statistical_trend_analysis'
+    ];
   }
 
   /**
-   * Analyze the user query to determine season analysis approach
+   * Initialize the Season Analysis Agent
    */
-  async analyzeQueryNode(state) {
+  async initialize(f1Adapter) {
     try {
-      const { currentQuery, messages } = state;
-
-      logger.debug('Analyzing season query', { query: currentQuery });
-
-      // Use LLM to extract season information from query
-      const analysisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'queryAnalysis', {
-        query: currentQuery
+      this.f1Adapter = f1Adapter;
+      
+      // Get F1 tools from the adapter
+      const f1Tools = f1Adapter.getTools();
+      
+      // Load system prompt (use executiveAnalyst as main prompt)
+      const systemPrompt = await promptLoader.getSystemPrompt('seasonAnalysis', 'executiveAnalyst');
+      
+      // Initialize base agent
+      await super.initialize(f1Tools, systemPrompt);
+      
+      logger.info('ModernSeasonAnalysisAgent initialized successfully', {
+        toolCount: f1Tools.length,
+        capabilities: this.analysisCapabilities
       });
 
-      const response = await this.model.invoke([
-        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'queryAnalyzer')),
-        new HumanMessage(analysisPrompt),
-      ]);
+      return true;
+    } catch (error) {
+      logger.error('Failed to initialize ModernSeasonAnalysisAgent', {
+        error: error.message
+      });
+      throw error;
+    }
+  }
 
-      let analysis;
-      try {
-        analysis = JSON.parse(response.content);
-      } catch (parseError) {
-        // Fallback to default analysis
-        analysis = {
-          seasons: [new Date().getFullYear()],
-          analysisType: 'single_season',
-          specificAspects: ['overview'],
-          entities: { drivers: [], constructors: [], races: [] },
-        };
+  /**
+   * Analyze F1 season with enhanced capabilities
+   */
+  async analyzeSeason(query, threadId, userContext = {}) {
+    const startTime = Date.now();
+    
+    try {
+      logger.info('Starting season analysis', {
+        threadId,
+        queryPreview: query.substring(0, 100) + '...'
+      });
+
+      // Enhance query with season analysis context
+      const enhancedQuery = this.enhanceQueryForSeasonAnalysis(query, userContext);
+      
+      // Process with modern base agent
+      const result = await this.processQuery(enhancedQuery, threadId, userContext);
+      
+      // Post-process the result for season analysis
+      const processedResult = await this.postProcessSeasonAnalysis(result, query);
+      
+      const duration = Date.now() - startTime;
+      
+      logger.info('Season analysis completed', {
+        threadId,
+        duration,
+        streaming: result.streaming,
+        success: result.success
+      });
+
+      return {
+        ...processedResult,
+        metadata: {
+          ...processedResult.metadata,
+          analysisType: 'season_analysis',
+          capabilities: this.analysisCapabilities,
+          duration
+        }
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      logger.error('Season analysis failed', {
+        threadId,
+        error: error.message,
+        duration
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Enhance query with season analysis specific context
+   */
+  enhanceQueryForSeasonAnalysis(query, userContext) {
+    const analysisContext = `
+F1 Season Analysis Context:
+- You are a specialized F1 season analysis expert
+- You have access to comprehensive F1 data from 1950 to present
+- Focus on providing detailed statistical analysis and insights
+- Consider constructor performance, driver achievements, and regulatory impacts
+- Use data-driven insights to support your analysis
+
+Available Analysis Capabilities:
+${this.analysisCapabilities.map(cap => `- ${cap.replace(/_/g, ' ')}`).join('\n')}
+
+User Query: ${query}
+`;
+
+    return analysisContext;
+  }
+
+  /**
+   * Post-process season analysis results
+   */
+  async postProcessSeasonAnalysis(result, originalQuery) {
+    try {
+      // Extract key insights from the analysis
+      const insights = await this.extractKeyInsights(result.result);
+      
+      // Identify data sources used
+      const dataSources = this.identifyDataSources(result);
+      
+      // Generate analysis summary
+      const summary = await this.generateAnalysisSummary(result.result, insights);
+
+      return {
+        ...result,
+        analysis: {
+          originalQuery,
+          keyInsights: insights,
+          dataSources,
+          summary,
+          analysisType: 'season_analysis',
+          confidence: this.calculateConfidence(result, insights)
+        }
+      };
+    } catch (error) {
+      logger.error('Failed to post-process season analysis', {
+        error: error.message
+      });
+      
+      // Return original result if post-processing fails
+      return result;
+    }
+  }
+
+  /**
+   * Extract key insights from analysis result
+   */
+  async extractKeyInsights(analysisText) {
+    try {
+      const insights = [];
+      
+      // Look for statistical patterns
+      const statisticalPatterns = this.extractStatisticalPatterns(analysisText);
+      if (statisticalPatterns.length > 0) {
+        insights.push({
+          type: 'statistical',
+          patterns: statisticalPatterns
+        });
+      }
+      
+      // Look for performance trends
+      const performanceTrends = this.extractPerformanceTrends(analysisText);
+      if (performanceTrends.length > 0) {
+        insights.push({
+          type: 'performance_trends',
+          trends: performanceTrends
+        });
+      }
+      
+      // Look for comparative analysis
+      const comparisons = this.extractComparativeAnalysis(analysisText);
+      if (comparisons.length > 0) {
+        insights.push({
+          type: 'comparisons',
+          comparisons
+        });
       }
 
-      // Update state with analysis results
-      const updatedState = {
-        ...state,
-        seasons: analysis.seasons,
-        selectedSeason: analysis.seasons[0] || new Date().getFullYear(),
-        analysisType: analysis.analysisType,
-      };
-
-      StateUtils.addMessage(updatedState, {
-        type: 'system',
-        content: `Query analyzed: ${
-          analysis.analysisType
-        } for seasons ${analysis.seasons.join(', ')}`,
-      });
-
-      StateUtils.updateConfidence(updatedState, 0.8);
-
-      return updatedState;
+      return insights;
     } catch (error) {
-      logger.error('Error in analyzeQueryNode', { error: error.message });
-      throw error;
+      logger.error('Failed to extract key insights', { error: error.message });
+      return [];
     }
   }
 
   /**
-   * Fetch season data from F1 MCP server
+   * Extract statistical patterns from analysis text
    */
-  async fetchSeasonDataNode(state) {
-    try {
-      const { seasons, selectedSeason } = state;
+  extractStatisticalPatterns(text) {
+    const patterns = [];
+    
+    // Look for numerical data patterns
+    const numberPattern = /(\d+(?:\.\d+)?)\s*(points?|wins?|races?|seasons?|%)/gi;
+    const matches = [...text.matchAll(numberPattern)];
+    
+    matches.forEach(match => {
+      patterns.push({
+        value: parseFloat(match[1]),
+        unit: match[2].toLowerCase(),
+        context: text.substring(Math.max(0, match.index - 50), match.index + 50)
+      });
+    });
+    
+    return patterns;
+  }
 
-      logger.debug('Fetching season data', { seasons });
+  /**
+   * Extract performance trends from analysis text
+   */
+  extractPerformanceTrends(text) {
+    const trends = [];
+    
+    // Look for trend keywords
+    const trendKeywords = [
+      'improved', 'declined', 'increased', 'decreased', 
+      'dominated', 'struggled', 'consistent', 'inconsistent'
+    ];
+    
+    trendKeywords.forEach(keyword => {
+      const regex = new RegExp(`\\b${keyword}\\b.*?(?:\\.|!|\\?|$)`, 'gi');
+      const matches = [...text.matchAll(regex)];
+      
+      matches.forEach(match => {
+        trends.push({
+          type: keyword,
+          description: match[0].trim()
+        });
+      });
+    });
+    
+    return trends;
+  }
 
-      // Fetch data for each season
-      const seasonDataPromises = seasons.map(async (year) => {
-        const [races, drivers, constructors, seasonSummary] = await Promise.all(
-          [
-            this.f1Adapter.f1Client.getRaces(year),
-            this.f1Adapter.f1Client.getDrivers(year),
-            this.f1Adapter.f1Client.getConstructors(year),
-            this.f1Adapter.f1Client.getSeasonSummary(year),
-          ],
+  /**
+   * Extract comparative analysis from text
+   */
+  extractComparativeAnalysis(text) {
+    const comparisons = [];
+    
+    // Look for comparison patterns
+    const comparisonPatterns = [
+      /compared to/gi,
+      /versus/gi,
+      /better than/gi,
+      /worse than/gi,
+      /similar to/gi
+    ];
+    
+    comparisonPatterns.forEach(pattern => {
+      const matches = [...text.matchAll(pattern)];
+      
+      matches.forEach(match => {
+        const context = text.substring(
+          Math.max(0, match.index - 100), 
+          Math.min(text.length, match.index + 100)
         );
-
-        return {
-          year,
-          races,
-          drivers,
-          constructors,
-          summary: seasonSummary,
-        };
+        
+        comparisons.push({
+          type: 'comparative',
+          context: context.trim()
+        });
       });
+    });
+    
+    return comparisons;
+  }
 
-      const seasonData = await Promise.all(seasonDataPromises);
+  /**
+   * Identify data sources used in the analysis
+   */
+  identifyDataSources(result) {
+    const dataSources = [];
+    
+    // Check if streaming chunks contain tool usage information
+    if (result.chunks) {
+      result.chunks.forEach(chunk => {
+        if (chunk.data && chunk.data.messages) {
+          chunk.data.messages.forEach(message => {
+            if (message.tool_calls) {
+              message.tool_calls.forEach(toolCall => {
+                if (toolCall.name && !dataSources.includes(toolCall.name)) {
+                  dataSources.push(toolCall.name);
+                }
+              });
+            }
+          });
+        }
+      });
+    }
+    
+    return dataSources;
+  }
 
-      // Update state with fetched data
-      const updatedState = {
-        ...state,
-        constructorData: seasonData.map((s) => ({
-          year: s.year,
-          data: s.constructors,
-        })),
-        raceResults: seasonData.map((s) => ({ year: s.year, data: s.races })),
+  /**
+   * Generate analysis summary
+   */
+  async generateAnalysisSummary(analysisText, insights) {
+    try {
+      const summary = {
+        totalInsights: insights.length,
+        statisticalInsights: insights.filter(i => i.type === 'statistical').length,
+        performanceTrends: insights.filter(i => i.type === 'performance_trends').length,
+        comparativeAnalysis: insights.filter(i => i.type === 'comparisons').length,
+        textLength: analysisText.length,
+        keyPoints: this.extractKeyPoints(analysisText)
       };
-
-      StateUtils.addResult(updatedState, {
-        type: 'season_data',
-        data: seasonData,
-        fetchedAt: new Date().toISOString(),
-      });
-
-      StateUtils.addMessage(updatedState, {
-        type: 'system',
-        content: `Fetched data for ${seasons.length} season(s): ${seasons.join(
-          ', ',
-        )}`,
-      });
-
-      StateUtils.updateConfidence(updatedState, 0.9);
-
-      return updatedState;
+      
+      return summary;
     } catch (error) {
-      logger.error('Error in fetchSeasonDataNode', { error: error.message });
-      throw error;
+      logger.error('Failed to generate analysis summary', { error: error.message });
+      return { error: 'Failed to generate summary' };
     }
   }
 
   /**
-   * Analyze constructor performance for single season
+   * Extract key points from analysis text
    */
-  async analyzeConstructorsNode(state) {
-    try {
-      const { selectedSeason, constructorData } = state;
-
-      logger.debug('Analyzing constructors', { season: selectedSeason });
-
-      // Get detailed constructor standings
-      const standings = await this.f1Adapter.f1Client.getConstructorStandings(
-        selectedSeason,
-      );
-
-      // Analyze constructor performance using LLM
-      const analysisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'constructorAnalysis', {
-        season: selectedSeason,
-        constructorData: constructorData,
-        standings: standings
-      });
-
-      const response = await this.model.invoke([
-        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'technicalAnalyst')),
-        new HumanMessage(analysisPrompt),
-      ]);
-
-      const updatedState = {
-        ...state,
-        championshipStandings: standings,
-      };
-
-      StateUtils.addResult(updatedState, {
-        type: 'constructor_analysis',
-        season: selectedSeason,
-        analysis: response.content,
-        standings: standings,
-      });
-
-      StateUtils.addInsight(updatedState, response.content);
-      StateUtils.updateConfidence(updatedState, 0.85);
-
-      return updatedState;
-    } catch (error) {
-      logger.error('Error in analyzeConstructorsNode', {
-        error: error.message,
-      });
-      throw error;
-    }
+  extractKeyPoints(text) {
+    const sentences = text.split(/[.!?]+/);
+    const keyPoints = [];
+    
+    // Look for sentences with high information density
+    sentences.forEach(sentence => {
+      const trimmed = sentence.trim();
+      if (trimmed.length > 20 && trimmed.length < 150) {
+        // Count F1-specific keywords
+        const f1Keywords = [
+          'championship', 'wins', 'points', 'pole', 'podium',
+          'constructor', 'driver', 'season', 'race', 'qualifying'
+        ];
+        
+        const keywordCount = f1Keywords.reduce((count, keyword) => {
+          return count + (trimmed.toLowerCase().includes(keyword) ? 1 : 0);
+        }, 0);
+        
+        if (keywordCount >= 2) {
+          keyPoints.push(trimmed);
+        }
+      }
+    });
+    
+    return keyPoints.slice(0, 5); // Return top 5 key points
   }
 
   /**
-   * Analyze trends across multiple seasons
+   * Calculate confidence score for the analysis
    */
-  async analyzeTrendsNode(state) {
-    try {
-      const { seasons, constructorData, raceResults } = state;
-
-      logger.debug('Analyzing multi-season trends', { seasons });
-
-      // Analyze trends using LLM
-      const trendsPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'trendsAnalysis', {
-        seasons: seasons,
-        seasonData: constructorData,
-        constructorData: constructorData,
-        raceResults: raceResults
-      });
-
-      const response = await this.model.invoke([
-        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'historian')),
-        new HumanMessage(trendsPrompt),
-      ]);
-
-      const updatedState = {
-        ...state,
-        trends: [
-          {
-            seasons: seasons,
-            analysis: response.content,
-            analyzedAt: new Date().toISOString(),
-          },
-        ],
-      };
-
-      StateUtils.addResult(updatedState, {
-        type: 'trend_analysis',
-        seasons: seasons,
-        analysis: response.content,
-      });
-
-      StateUtils.addInsight(updatedState, response.content);
-      StateUtils.updateConfidence(updatedState, 0.8);
-
-      return updatedState;
-    } catch (error) {
-      logger.error('Error in analyzeTrendsNode', { error: error.message });
-      throw error;
+  calculateConfidence(result, insights) {
+    let confidence = 0.5; // Base confidence
+    
+    // Increase confidence based on insights
+    confidence += insights.length * 0.05;
+    
+    // Increase confidence if analysis is detailed
+    if (result.result && result.result.length > 1000) {
+      confidence += 0.1;
     }
+    
+    // Increase confidence if multiple data sources were used
+    const dataSources = this.identifyDataSources(result);
+    confidence += dataSources.length * 0.05;
+    
+    // Cap confidence at 0.95
+    return Math.min(0.95, confidence);
   }
 
   /**
-   * Generate comprehensive insights
+   * Get specialized capabilities
    */
-  async generateInsightsNode(state) {
-    try {
-      const { results, insights, selectedSeason, seasons } = state;
-
-      logger.debug('Generating comprehensive insights');
-
-      // Generate comprehensive insights using all collected data
-      const insightPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'insightsGeneration', {
-        analysisResults: results,
-        constructorAnalysis: state.constructorAnalysis,
-        trendsAnalysis: state.trendsAnalysis,
-        confidence: state.confidence
-      });
-
-      const response = await this.model.invoke([
-        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'executiveAnalyst')),
-        new HumanMessage(insightPrompt),
-      ]);
-
-      const updatedState = { ...state };
-
-      StateUtils.addResult(updatedState, {
-        type: 'comprehensive_insights',
-        insights: response.content,
-        basedOn: results.length,
-      });
-
-      StateUtils.addInsight(updatedState, response.content);
-      StateUtils.updateConfidence(updatedState, 0.9);
-
-      return updatedState;
-    } catch (error) {
-      logger.error('Error in generateInsightsNode', { error: error.message });
-      throw error;
-    }
-  }
-
-  /**
-   * Synthesize final results
-   */
-  async synthesizeResultsNode(state) {
-    try {
-      const { results, insights, seasons, currentQuery } = state;
-
-      logger.debug('Synthesizing final results');
-
-      // Create final synthesis
-      const synthesisPrompt = promptLoader.getFormattedAnalysisPrompt('seasonAnalysis', 'finalSynthesis', {
-        query: currentQuery,
-        insights: insights,
-        confidence: state.confidence
-      });
-
-      const response = await this.model.invoke([
-        new SystemMessage(promptLoader.getSystemPrompt('seasonAnalysis', 'responseCreator')),
-        new HumanMessage(synthesisPrompt),
-      ]);
-
-      const updatedState = {
-        ...state,
-        finalResponse: response.content,
-        completedAt: new Date().toISOString(),
-      };
-
-      StateUtils.addMessage(updatedState, {
-        type: 'assistant',
-        content: response.content,
-      });
-
-      StateUtils.updateConfidence(updatedState, 0.95);
-
-      return updatedState;
-    } catch (error) {
-      logger.error('Error in synthesizeResultsNode', { error: error.message });
-      throw error;
-    }
-  }
-
-  /**
-   * Route season analysis based on query type
-   */
-  routeSeasonAnalysis(state) {
-    const { seasons, analysisType } = state;
-
-    if (seasons.length === 1) {
-      return 'single_season';
-    } else if (seasons.length > 1) {
-      return 'multi_season';
-    } else {
-      return 'end';
-    }
-  }
-
-  /**
-   * Analyze a season query
-   */
-  async analyze(query, options = {}) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      logger.info('Starting season analysis', { query });
-
-      const initialState = new SeasonState();
-      initialState.currentQuery = query;
-
-      StateUtils.addMessage(initialState, {
-        type: 'human',
-        content: query,
-      });
-
-      // Run the workflow
-      const result = await this.graph.invoke(initialState, {
-        configurable: {
-          thread_id: options.threadId || `season_${Date.now()}`,
-          recursion_limit: this.maxIterations,
-        },
-      });
-
-      logger.info('Season analysis completed', {
-        confidence: result.confidence,
-        insights: result.insights?.length || 0,
-      });
-
-      return result;
-    } catch (error) {
-      logger.error('Season analysis failed', { error: error.message, query });
-      throw error;
-    }
-  }
-
-  /**
-   * Get agent information
-   */
-  getInfo() {
+  getCapabilities() {
     return {
-      name: 'Season Analysis Agent',
-      description:
-        'Specialized F1 agent for comprehensive season analysis and insights',
-      capabilities: [
-        'Single season analysis',
-        'Multi-season comparisons',
-        'Constructor performance analysis',
-        'Performance trends identification',
-        'Historical context and insights',
+      agentType: 'seasonAnalysis',
+      capabilities: this.analysisCapabilities,
+      supportedOperations: [
+        'multi_season_comparison',
+        'constructor_performance_analysis',
+        'driver_career_tracking',
+        'statistical_trend_analysis',
+        'regulation_impact_assessment'
       ],
-      initialized: this.initialized,
+      dataSourcesSupported: [
+        'seasons_data',
+        'race_results',
+        'driver_standings',
+        'constructor_standings',
+        'race_details'
+      ]
     };
   }
 }
 
-export default SeasonAnalysisAgent;
+export default ModernSeasonAnalysisAgent;
